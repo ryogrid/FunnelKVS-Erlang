@@ -222,7 +222,7 @@ Current single-node performance (Phase 1):
 ### Phase Completion
 - ✅ **Phase 1**: Basic KVS with TCP server/client (100% complete)
 - ✅ **Phase 2**: Chord DHT foundation (100% complete)
-- 🚧 **Phase 3**: Node join/leave protocols (75% complete)
+- 🚧 **Phase 3**: Node join/leave protocols (85% complete)
 - 📋 **Phase 4**: Replication & consistency (planned)
 - 📋 **Phase 5**: Production features (planned)
 - 📋 **Phase 6**: Client tools & documentation (planned)
@@ -337,6 +337,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Status
 
 ![Tests](https://img.shields.io/badge/tests-94%20passing-brightgreen)
-![Phase](https://img.shields.io/badge/phase-3%20(75%25)-orange)
+![Phase](https://img.shields.io/badge/phase-3%20(85%25)-orange)
 ![Erlang](https://img.shields.io/badge/erlang-%E2%89%A524-red)
 ![License](https://img.shields.io/badge/license-MIT-blue)
