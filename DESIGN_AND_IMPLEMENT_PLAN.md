@@ -242,15 +242,13 @@ Response:
 
 **Tasks**:
 1. Successor-list replication
-2. Quorum-based reads/writes
-3. Replica synchronization
-4. Conflict resolution (last-write-wins)
-5. Anti-entropy protocol
+2. Replica synchronization
+3. Quorum-based reads/writes
 
 **Deliverables**:
-- N-way replication
-- Configurable consistency levels
+- N-way replication (N=3)
 - Automatic replica repair
+- Configurable consistency levels
 
 **Testing**:
 - Replication correctness
@@ -258,7 +256,7 @@ Response:
 - Partition tolerance tests
 
 ### Phase 5: Production Features (Week 5)
-**Goal**: Production-ready features
+**Goal**: Production-ready features and advanced consistency
 
 **Tasks**:
 1. OTP supervision tree
@@ -266,6 +264,8 @@ Response:
 3. Monitoring and statistics
 4. Performance optimization
 5. Load balancing improvements
+6. Conflict resolution (last-write-wins)
+7. Anti-entropy protocol
 
 **Deliverables**:
 - Fault-tolerant OTP application

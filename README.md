@@ -41,11 +41,16 @@ FunnelKVS is a scalable, fault-tolerant distributed key-value storage system bui
 - ✅ **Failure detection** - automatic detection and ring repair
 - ✅ **Successor list** - maintains backup successors for fault tolerance
 
-### Planned (Phase 4-6)
-- 📋 Replication (N=3 successor list)
-- 📋 Fault tolerance and recovery
-- 📋 Anti-entropy with Merkle trees
-- 📋 Quorum-based consistency
+### Planned (Phase 4)
+- 📋 Successor-list replication (N=3)
+- 📋 Replica synchronization
+- 📋 Quorum-based reads/writes
+
+### Planned (Phase 5-6)
+- 📋 Conflict resolution (last-write-wins)
+- 📋 Anti-entropy protocol
+- 📋 OTP supervision trees
+- 📋 Performance optimizations
 
 ## Architecture
 
@@ -280,17 +285,18 @@ Current single-node performance (Phase 1):
 - [x] Failure detection and automatic ring repair
 - [x] Successor list maintenance
 
-#### Phase 4
-- [ ] Successor list replication (N=3)
+#### Phase 4 (Next)
+- [ ] Successor-list replication (N=3)
+- [ ] Replica synchronization
 - [ ] Quorum-based reads/writes
-- [ ] Anti-entropy protocol
-- [ ] Conflict resolution
 
 #### Phase 5
 - [ ] OTP supervision tree
 - [ ] Configuration management
 - [ ] Monitoring and metrics
 - [ ] Performance optimizations
+- [ ] Conflict resolution (last-write-wins)
+- [ ] Anti-entropy protocol
 
 #### Phase 6
 - [ ] Enhanced CLI tools
