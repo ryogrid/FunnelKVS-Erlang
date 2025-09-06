@@ -10,7 +10,7 @@
 -export([key_belongs_to/3, between/3]).
 -export([init_finger_table/1, find_successor/2]).
 -export([get_id/1, get_successor/1, get_predecessor/1, get_finger_table/1, get_successor_list/1]).
--export([put/3, put/4, get/2, get/3, delete/2]).
+-export([put/3, put/4, get/2, get/3, delete/2, delete/3]).
 -export([closest_preceding_node/3]).
 -export([notify/2, transfer_keys/3]).
 -export([get_local_keys/1, get_ring_nodes/1]).
@@ -139,6 +139,9 @@ get(Pid, Key, Consistency) ->
 delete(Pid, Key) ->
     gen_server:call(Pid, {delete, Key}).
 
+delete(Pid, Key, ConsistencyMode) ->
+    gen_server:call(Pid, {delete, Key, ConsistencyMode}).
+
 closest_preceding_node(NodeId, Key, FingerTable) ->
     % Find the closest finger that precedes the key
     ValidFingers = lists:filter(fun(#finger_entry{node = N}) ->
@@ -218,7 +221,16 @@ init([Port, JoinNode]) ->
             % Creating new ring, we are our own successor
             State2;
         {JoinIP, JoinPort} ->
-            join_ring_internal(State2, JoinIP, JoinPort)
+            try
+                join_ring_internal(State2, JoinIP, JoinPort)
+            catch
+                error:{join_failed, Reason} ->
+                    % Failed to join, return error
+                    stop_maintenance_timers(State2),
+                    kvs_store:stop(KvsStore),
+                    chord_rpc:stop_server(RpcServer),
+                    error({join_failed, Reason})
+            end
     end,
     
     {ok, State3}.
@@ -326,6 +338,32 @@ handle_call({delete, Key}, _From, #chord_state{kvs_store = Store, self = Self, s
         false ->
             % Forward to responsible node
             forward_to_remote_node(ResponsibleNode, {delete, Key})
+    end,
+    {reply, Result, State};
+
+handle_call({delete, Key, ConsistencyMode}, _From, #chord_state{kvs_store = Store, self = Self, successor_list = SuccList} = State) ->
+    KeyHash = hash_key(Key),
+    ResponsibleNode = find_successor_internal(KeyHash, State),
+    
+    Result = case ResponsibleNode#node_info.id =:= Self#node_info.id of
+        true ->
+            % We are responsible for this key
+            case ConsistencyMode of
+                eventual ->
+                    % Eventual consistency - just delete locally and from replicas async
+                    kvs_store:delete(Store, Key),
+                    delete_from_successors(Key, SuccList),
+                    ok;
+                quorum ->
+                    % Quorum consistency - ensure W nodes delete
+                    quorum_delete(Store, Key, SuccList);
+                _ ->
+                    % Default to quorum
+                    quorum_delete(Store, Key, SuccList)
+            end;
+        false ->
+            % Forward to responsible node
+            forward_to_remote_node(ResponsibleNode, {delete, Key, ConsistencyMode})
     end,
     {reply, Result, State};
 
@@ -543,6 +581,16 @@ handle_info(sync_replicas, State) ->
     spawn(fun() -> sync_replicas_async(State) end),
     {noreply, State};
 
+handle_info(redistribute_replicas, State) ->
+    % Handle replica redistribution after predecessor change
+    spawn(fun() -> redistribute_replicas_async(State) end),
+    {noreply, State};
+
+handle_info(recover_replicas, State) ->
+    % Handle replica recovery after node failure
+    spawn(fun() -> recover_replicas_async(State) end),
+    {noreply, State};
+
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -587,17 +635,35 @@ cancel_timer(undefined) -> ok;
 cancel_timer(Timer) -> erlang:cancel_timer(Timer).
 
 join_ring_internal(State, JoinIP, JoinPort) ->
-    % Find our successor through the existing node
-    JoinNode = #node_info{
-        id = generate_node_id(JoinIP, JoinPort),
-        ip = parse_ip(JoinIP),
-        port = JoinPort,
-        pid = undefined  % Remote node
-    },
-    
-    % For now, just set the join node as our successor
-    % TODO: Implement proper RPC to find successor
-    State#chord_state{successor = JoinNode}.
+    % Find our successor through the existing node via RPC
+    case chord_rpc:connect(JoinIP, JoinPort) of
+        {ok, Socket} ->
+            MyId = State#chord_state.self#node_info.id,
+            case chord_rpc:call(Socket, find_successor, [MyId]) of
+                {ok, SuccessorInfo} ->
+                    Successor = decode_node_info(SuccessorInfo),
+                    chord_rpc:close(Socket),
+                    
+                    % Update our state with the found successor
+                    State2 = State#chord_state{
+                        successor = Successor,
+                        predecessor = undefined
+                    },
+                    
+                    % Notify our new successor about us
+                    notify_rpc(Successor, State2#chord_state.self),
+                    
+                    % Request key transfer from successor
+                    transfer_keys_from_successor(State2, Successor),
+                    
+                    State2;
+                Error ->
+                    chord_rpc:close(Socket),
+                    error({join_failed, Error})
+            end;
+        Error ->
+            error({join_failed, Error})
+    end.
 
 do_stabilize_async(NodePid, #chord_state{self = Self, successor = Successor, predecessor = Pred, successor_list = SuccList}) ->
     % Special case: if we have no predecessor and successor is self,
@@ -620,7 +686,9 @@ do_stabilize_async(NodePid, #chord_state{self = Self, successor = Successor, pre
                             _ -> Pred
                         end
                     end,
-                    gen_server:cast(NodePid, {update_successor, NewSucc});
+                    gen_server:cast(NodePid, {update_successor, NewSucc}),
+                    % Trigger replica recovery after successor failure
+                    erlang:send_after(500, NodePid, recover_replicas);
                 true ->
                     % Check if successor's predecessor is between us and successor
                     case get_predecessor_rpc(Successor) of
@@ -687,7 +755,8 @@ check_predecessor(#chord_state{predecessor = Pred} = State) ->
                 true ->
                     State;
                 false ->
-                    % Predecessor has failed
+                    % Predecessor has failed - trigger replica recovery
+                    erlang:send_after(500, self(), recover_replicas),
                     State#chord_state{predecessor = undefined}
             end
     end.
@@ -815,6 +884,82 @@ sync_replicas_async(#chord_state{kvs_store = Store, self = Self, successor_list 
     end,
     ok.
 
+redistribute_replicas_async(#chord_state{kvs_store = Store, self = Self, successor_list = SuccList, predecessor = Pred}) ->
+    % After a predecessor change, we need to:
+    % 1. Remove replicas we no longer need to hold
+    % 2. Ensure we have replicas we should now hold
+    
+    {ok, AllKeys} = kvs_store:list_keys(Store),
+    
+    % Find keys we should no longer have (neither primary nor replica)
+    KeysToRemove = lists:filter(fun(Key) ->
+        KeyHash = hash_key(Key),
+        
+        % Check if we're the primary for this key
+        AmIPrimary = case Pred of
+            undefined -> true;
+            _ -> key_belongs_to(KeyHash, Pred#node_info.id, Self#node_info.id)
+        end,
+        
+        case AmIPrimary of
+            true -> false;  % We're primary, keep it
+            false ->
+                % Check if we should be a replica holder
+                % Find the primary node for this key
+                PrimaryNode = find_primary_node(KeyHash, Self, Pred, SuccList),
+                case PrimaryNode of
+                    Self -> false;  % We're actually the primary (edge case)
+                    _ ->
+                        % Check if we're in the replica set for this key
+                        ReplicaSet = get_replica_set(PrimaryNode, SuccList),
+                        not lists:member(Self, ReplicaSet)
+                end
+        end
+    end, AllKeys),
+    
+    % Remove keys we shouldn't have
+    lists:foreach(fun(Key) ->
+        kvs_store:delete(Store, Key)
+    end, KeysToRemove),
+    
+    % Request replicas we should have from predecessors
+    % This is handled by the periodic sync_replicas process
+    ok.
+
+recover_replicas_async(#chord_state{kvs_store = Store, self = Self, successor_list = SuccList, predecessor = Pred}) ->
+    % After a node failure, we need to ensure replication factor is maintained
+    % This is called when predecessor fails or when successor fails
+    
+    {ok, AllKeys} = kvs_store:list_keys(Store),
+    
+    % Filter keys we are primary for
+    PrimaryKeys = lists:filter(fun(Key) ->
+        KeyHash = hash_key(Key),
+        case Pred of
+            undefined -> true;  % We might be the only node or first after failure
+            _ -> key_belongs_to(KeyHash, Pred#node_info.id, Self#node_info.id)
+        end
+    end, AllKeys),
+    
+    % Ensure replication factor for our primary keys
+    case SuccList of
+        [] -> ok;  % No successors available
+        _ ->
+            % We need N-1 replicas (we hold the primary copy)
+            RequiredReplicas = ?REPLICATION_FACTOR - 1,
+            ReplicaNodes = lists:sublist(SuccList, RequiredReplicas),
+            
+            % Re-replicate all primary keys to ensure replication factor
+            lists:foreach(fun(Key) ->
+                {ok, Value} = kvs_store:get(Store, Key),
+                lists:foreach(fun(Node) ->
+                    % Force replication to maintain replication factor
+                    spawn(fun() -> replicate_to_node(Node, Key, Value) end)
+                end, ReplicaNodes)
+            end, PrimaryKeys)
+    end,
+    ok.
+
 sync_replica_to_node(#node_info{ip = IP, port = Port}, Key, Value) ->
     case chord_rpc:connect(inet:ntoa(IP), Port) of
         {ok, Socket} ->
@@ -831,6 +976,40 @@ sync_replica_to_node(#node_info{ip = IP, port = Port}, Key, Value) ->
         _ ->
             % Node unreachable, skip
             ok
+    end.
+
+quorum_delete(Store, Key, SuccList) ->
+    % Calculate quorum size: W = (N+1)/2
+    W = (?REPLICATION_FACTOR + 1) div 2,
+    
+    % Delete locally first
+    kvs_store:delete(Store, Key),
+    LocalWrite = 1,
+    
+    % Get replica nodes
+    ReplicaNodes = lists:sublist(SuccList, ?REPLICATION_FACTOR - 1),
+    
+    % Spawn delete operations to replicas
+    Parent = self(),
+    Ref = make_ref(),
+    lists:foreach(fun(Node) ->
+        spawn(fun() ->
+            case delete_from_node(Node, Key) of
+                ok -> Parent ! {Ref, success};
+                _ -> Parent ! {Ref, failure}
+            end
+        end)
+    end, ReplicaNodes),
+    
+    % Collect responses with timeout
+    Timeout = 5000,
+    SuccessCount = collect_quorum_responses(Ref, length(ReplicaNodes), LocalWrite, W, Timeout),
+    
+    if
+        SuccessCount >= W ->
+            ok;
+        true ->
+            {error, insufficient_replicas}
     end.
 
 %% Quorum-based operations
@@ -1024,8 +1203,9 @@ find_successor_internal(Key, #chord_state{
             end
     end.
 
-handle_notify_internal(Node, #chord_state{self = Self, predecessor = Pred, successor = Succ} = State) ->
-    %% Update predecessor if needed
+handle_notify_internal(Node, #chord_state{self = Self, predecessor = Pred, successor = Succ, kvs_store = Store} = State) ->
+    %% Check if we should update predecessor
+    OldPred = Pred,
     State2 = case Pred of
         undefined ->
             State#chord_state{predecessor = Node};
@@ -1038,18 +1218,31 @@ handle_notify_internal(Node, #chord_state{self = Self, predecessor = Pred, succe
             end
     end,
     
+    %% If predecessor changed, handle replica redistribution
+    State3 = case State2#chord_state.predecessor of
+        OldPred ->
+            State2;  % No change
+        NewPred ->
+            % Predecessor changed - need to handle key/replica redistribution
+            % 1. Transfer keys that now belong to the new predecessor
+            transfer_keys_to_new_predecessor(Store, OldPred, NewPred, Self),
+            % 2. Schedule replica redistribution
+            erlang:send_after(1000, self(), redistribute_replicas),
+            State2
+    end,
+    
     %% If we are our own successor (single node ring) and a new node is notifying us,
     %% it should become our successor (for initial ring formation)
-    State3 = case Succ#node_info.id =:= Self#node_info.id andalso Node#node_info.id =/= Self#node_info.id of
+    State4 = case Succ#node_info.id =:= Self#node_info.id andalso Node#node_info.id =/= Self#node_info.id of
         true ->
             %% In a single-node ring that gets a notify, the new node should become our successor
             %% Schedule a reciprocal notify after a short delay
             erlang:send_after(100, self(), {notify_new_successor, Node}),
-            State2#chord_state{successor = Node};
+            State3#chord_state{successor = Node};
         false ->
-            State2
+            State3
     end,
-    State3.
+    State4.
 
 get_predecessor_rpc(#node_info{pid = Pid}) when Pid =:= self() ->
     {error, self_reference};
@@ -1365,6 +1558,58 @@ update_predecessor_on_node(#node_info{ip = IP, port = Port}, NewPred) ->
 
 collect_ring_nodes(#chord_state{self = Self, successor = Succ}) ->
     collect_ring_nodes(Self, Succ, [Self]).
+
+transfer_keys_to_new_predecessor(Store, _OldPred, NewPred, Self) ->
+    % Transfer keys that now belong to the new predecessor
+    {ok, AllKeys} = kvs_store:list_keys(Store),
+    KeysToTransfer = lists:filter(fun(Key) ->
+        KeyHash = hash_key(Key),
+        % Check if this key now belongs to the new predecessor
+        case NewPred of
+            undefined -> false;
+            _ ->
+                % Key belongs to new predecessor if it's between (NewPred, Self]
+                not key_belongs_to(KeyHash, NewPred#node_info.id, Self#node_info.id)
+        end
+    end, AllKeys),
+    
+    % Transfer the keys to the new predecessor
+    case KeysToTransfer of
+        [] -> ok;
+        _ ->
+            KeyValuePairs = lists:map(fun(Key) ->
+                {ok, Value} = kvs_store:get(Store, Key),
+                % Delete from our store since it's no longer our responsibility
+                kvs_store:delete(Store, Key),
+                {Key, Value}
+            end, KeysToTransfer),
+            transfer_keys_to_node(NewPred, KeyValuePairs)
+    end.
+
+find_primary_node(KeyHash, Self, Pred, _SuccList) ->
+    % Find which node is the primary for a given key hash
+    case Pred of
+        undefined -> Self;  % Single node ring
+        _ ->
+            % Check if the key belongs to us
+            case key_belongs_to(KeyHash, Pred#node_info.id, Self#node_info.id) of
+                true -> Self;
+                false ->
+                    % Key doesn't belong to us, it must belong to a successor
+                    % For simplicity, return undefined (will be cleaned up)
+                    undefined
+            end
+    end.
+
+get_replica_set(PrimaryNode, SuccList) ->
+    % Get the set of nodes that should hold replicas for a primary node
+    case PrimaryNode of
+        undefined -> [];
+        _ ->
+            % The replica set is the primary node plus its successors
+            ReplicaNodes = lists:sublist(SuccList, ?REPLICATION_FACTOR - 1),
+            [PrimaryNode | ReplicaNodes]
+    end.
 
 collect_ring_nodes(Start, Current, Acc) when Current#node_info.id =:= Start#node_info.id ->
     Acc;

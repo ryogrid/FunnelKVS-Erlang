@@ -82,7 +82,8 @@ test_key_migration_on_join() ->
     ],
     
     lists:foreach(fun({K, V}) ->
-        ok = chord:put(Node1, K, V)
+        % Use eventual consistency for single-node insertion
+        ok = chord:put(Node1, K, V, eventual)
     end, Keys),
     
     %% Check keys are stored on Node1

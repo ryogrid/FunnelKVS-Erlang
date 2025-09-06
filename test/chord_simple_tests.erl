@@ -103,20 +103,20 @@ single_node_data_test() ->
     {ok, Node1} = chord:start_link(9002),
     timer:sleep(100),
     
-    % Test PUT operation
+    % Test PUT operation (use eventual consistency for single node)
     Key = <<"test_key">>,
     Value = <<"test_value">>,
-    ?assertEqual(ok, chord:put(Node1, Key, Value)),
+    ?assertEqual(ok, chord:put(Node1, Key, Value, eventual)),
     
-    % Test GET operation
-    ?assertEqual({ok, Value}, chord:get(Node1, Key)),
+    % Test GET operation (use eventual consistency for single node)
+    ?assertEqual({ok, Value}, chord:get(Node1, Key, eventual)),
     
     % Test GET non-existent key
-    ?assertEqual({error, not_found}, chord:get(Node1, <<"nonexistent">>)),
+    ?assertEqual({error, not_found}, chord:get(Node1, <<"nonexistent">>, eventual)),
     
-    % Test DELETE operation
-    ?assertEqual(ok, chord:delete(Node1, Key)),
-    ?assertEqual({error, not_found}, chord:get(Node1, Key)),
+    % Test DELETE operation (use eventual consistency for single node)
+    ?assertEqual(ok, chord:delete(Node1, Key, eventual)),
+    ?assertEqual({error, not_found}, chord:get(Node1, Key, eventual)),
     
     % Clean up
     chord:stop(Node1).
@@ -175,33 +175,33 @@ multiple_operations_test() ->
     Keys = [<<"key", (integer_to_binary(I))/binary>> || I <- lists:seq(1, 10)],
     Values = [<<"value", (integer_to_binary(I))/binary>> || I <- lists:seq(1, 10)],
     
-    % PUT all pairs
+    % PUT all pairs (use eventual consistency for single node)
     lists:foreach(fun({K, V}) ->
-        ?assertEqual(ok, chord:put(Node1, K, V))
+        ?assertEqual(ok, chord:put(Node1, K, V, eventual))
     end, lists:zip(Keys, Values)),
     
-    % GET all pairs
+    % GET all pairs (use eventual consistency for single node)
     lists:foreach(fun({K, V}) ->
-        ?assertEqual({ok, V}, chord:get(Node1, K))
+        ?assertEqual({ok, V}, chord:get(Node1, K, eventual))
     end, lists:zip(Keys, Values)),
     
-    % DELETE some pairs
+    % DELETE some pairs (use eventual consistency for single node)
     lists:foreach(fun(K) ->
-        ?assertEqual(ok, chord:delete(Node1, K))
+        ?assertEqual(ok, chord:delete(Node1, K, eventual))
     end, lists:sublist(Keys, 5)),
     
-    % Verify deleted
+    % Verify deleted (use eventual consistency for single node)
     lists:foreach(fun(K) ->
-        ?assertEqual({error, not_found}, chord:get(Node1, K))
+        ?assertEqual({error, not_found}, chord:get(Node1, K, eventual))
     end, lists:sublist(Keys, 5)),
     
-    % Verify remaining
+    % Verify remaining (use eventual consistency for single node)
     RemainingPairs = lists:zip(
         lists:sublist(Keys, 6, 5),
         lists:sublist(Values, 6, 5)
     ),
     lists:foreach(fun({K, V}) ->
-        ?assertEqual({ok, V}, chord:get(Node1, K))
+        ?assertEqual({ok, V}, chord:get(Node1, K, eventual))
     end, RemainingPairs),
     
     % Clean up
