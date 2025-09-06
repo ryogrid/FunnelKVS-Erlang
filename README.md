@@ -25,12 +25,17 @@ FunnelKVS is a scalable, fault-tolerant distributed key-value storage system bui
 ### Implemented (Phase 3 - In Progress)
 - ✅ **RPC framework** for multi-node communication
 - ✅ **TCP-based RPC** with binary protocol handshake
-- ✅ **Remote procedure calls**: find_successor, notify, transfer_keys
+- ✅ **Remote procedure calls**: find_successor, notify, transfer_keys, get_predecessor
 - ✅ **Concurrent RPC connections** support
 - ✅ **Multi-node test framework** with comprehensive test coverage
-- 🚧 Node join protocol with key transfer (tests written, implementation in progress)
-- 🚧 Dynamic ring membership (foundation complete, stabilization needed)
-- 🚧 Failure detection (tests written, implementation pending)
+- ✅ **Stabilization mechanism** with periodic maintenance timers
+- ✅ **Basic join_ring implementation** with successor finding
+- ✅ **Notify protocol** for predecessor/successor updates
+- 🚧 Node join protocol completion (notification chain needs fixing)
+- 🚧 Key migration on join (transfer logic implemented, testing needed)
+- 🚧 Dynamic ring membership (partial - two-node rings need work)
+- 🚧 Graceful departure (leave_ring partial implementation)
+- 🚧 Failure detection (framework exists, detection logic pending)
 
 ### Planned (Phase 4-6)
 - 📋 Replication (N=3 successor list)
@@ -217,23 +222,26 @@ Current single-node performance (Phase 1):
 ### Phase Completion
 - ✅ **Phase 1**: Basic KVS with TCP server/client (100% complete)
 - ✅ **Phase 2**: Chord DHT foundation (100% complete)
-- 🚧 **Phase 3**: Node join/leave protocols (65% complete)
+- 🚧 **Phase 3**: Node join/leave protocols (75% complete)
 - 📋 **Phase 4**: Replication & consistency (planned)
 - 📋 **Phase 5**: Production features (planned)
 - 📋 **Phase 6**: Client tools & documentation (planned)
 
 ### Roadmap
 
-#### Phase 3 (Current)
+#### Phase 3 (Current - 75% Complete)
 - [x] RPC framework for node communication
 - [x] TCP-based RPC with handshake protocol
 - [x] Remote procedure calls implementation
 - [x] Key transfer preparation logic
 - [x] Multi-node test framework
-- [ ] Node join protocol with automatic key migration (in progress)
-- [ ] Multi-node ring stabilization (in progress)
-- [ ] Graceful node departure (tests written)
-- [ ] Failure detection (tests written)
+- [x] Stabilization mechanism with maintenance timers
+- [x] Basic join_ring and notify protocols
+- [ ] Complete two-node ring formation (debugging successor updates)
+- [ ] Multi-node ring stabilization (needs testing)
+- [ ] Key migration on join (implementation exists, needs testing)
+- [ ] Graceful node departure (partial implementation)
+- [ ] Failure detection (framework exists, logic pending)
 
 #### Phase 4
 - [ ] Successor list replication (N=3)
@@ -329,6 +337,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 ## Status
 
 ![Tests](https://img.shields.io/badge/tests-94%20passing-brightgreen)
-![Phase](https://img.shields.io/badge/phase-3%20(65%25)-orange)
+![Phase](https://img.shields.io/badge/phase-3%20(75%25)-orange)
 ![Erlang](https://img.shields.io/badge/erlang-%E2%89%A524-red)
 ![License](https://img.shields.io/badge/license-MIT-blue)

@@ -32,31 +32,35 @@ chord_multinode_test_() ->
 %% Test node join protocol
 test_node_join() ->
     %% Start first node
-    {ok, Node1} = chord:start_node(1, 8001),
+    {ok, Node1} = chord:start_node(1, 9001),
     
     %% Create the ring
     ok = chord:create_ring(Node1),
     
     %% Start second node
-    {ok, Node2} = chord:start_node(2, 8002),
+    {ok, Node2} = chord:start_node(2, 9002),
     
     %% Join the ring through Node1
-    ok = chord:join_ring(Node2, "localhost", 8001),
+    ok = chord:join_ring(Node2, "localhost", 9001),
     
     %% Wait for stabilization
     timer:sleep(1000),
     
     %% Verify both nodes know about each other
-    {ok, Successor1} = chord:get_successor(Node1),
-    {ok, Predecessor1} = chord:get_predecessor(Node1),
-    {ok, Successor2} = chord:get_successor(Node2),
-    {ok, Predecessor2} = chord:get_predecessor(Node2),
+    Successor1 = chord:get_successor(Node1),
+    Predecessor1 = chord:get_predecessor(Node1),
+    Successor2 = chord:get_successor(Node2),
+    Predecessor2 = chord:get_predecessor(Node2),
+    
+    %% Get node IDs
+    NodeId1 = chord:get_id(Node1),
+    NodeId2 = chord:get_id(Node2),
     
     %% In a two-node ring, each node should point to the other
-    ?assertEqual(2, Successor1#node_info.id),
-    ?assertEqual(2, Predecessor1#node_info.id),
-    ?assertEqual(1, Successor2#node_info.id),
-    ?assertEqual(1, Predecessor2#node_info.id),
+    ?assertEqual(NodeId2, Successor1#node_info.id),
+    ?assertEqual(NodeId2, Predecessor1#node_info.id),
+    ?assertEqual(NodeId1, Successor2#node_info.id),
+    ?assertEqual(NodeId1, Predecessor2#node_info.id),
     
     %% Stop nodes
     chord:stop_node(Node1),
@@ -65,7 +69,7 @@ test_node_join() ->
 %% Test key migration when a new node joins
 test_key_migration_on_join() ->
     %% Start first node and create ring
-    {ok, Node1} = chord:start_node(1, 8001),
+    {ok, Node1} = chord:start_node(1, 9101),
     ok = chord:create_ring(Node1),
     
     %% Insert some keys into Node1
@@ -82,8 +86,8 @@ test_key_migration_on_join() ->
     end, Keys),
     
     %% Start second node and join
-    {ok, Node2} = chord:start_node(2, 8002),
-    ok = chord:join_ring(Node2, "localhost", 8001),
+    {ok, Node2} = chord:start_node(2, 9102),
+    ok = chord:join_ring(Node2, "localhost", 9101),
     
     %% Wait for stabilization and key migration
     timer:sleep(2000),
@@ -113,7 +117,7 @@ test_key_migration_on_join() ->
 test_multinode_stabilization() ->
     %% Start multiple nodes
     Nodes = lists:map(fun(I) ->
-        Port = 8000 + I,
+        Port = 9200 + I,
         {ok, Node} = chord:start_node(I, Port),
         Node
     end, lists:seq(1, 4)),
@@ -124,27 +128,28 @@ test_multinode_stabilization() ->
     ok = chord:create_ring(Node1),
     
     %% Join other nodes sequentially
-    ok = chord:join_ring(Node2, "localhost", 8001),
+    ok = chord:join_ring(Node2, "localhost", 9201),
     timer:sleep(500),
-    ok = chord:join_ring(Node3, "localhost", 8001),
+    ok = chord:join_ring(Node3, "localhost", 9201),
     timer:sleep(500),
-    ok = chord:join_ring(Node4, "localhost", 8001),
+    ok = chord:join_ring(Node4, "localhost", 9201),
     
     %% Wait for stabilization
     timer:sleep(3000),
     
     %% Verify ring consistency
     lists:foreach(fun(Node) ->
-        {ok, Successor} = chord:get_successor(Node),
-        {ok, Predecessor} = chord:get_predecessor(Node),
+        Successor = chord:get_successor(Node),
+        Predecessor = chord:get_predecessor(Node),
         
         %% Successor's predecessor should be this node
-        {ok, SuccPred} = chord:get_predecessor(Successor),
-        ?assertEqual(Node, SuccPred),
+        SuccPred = chord:get_predecessor(Successor#node_info.pid),
+        NodeId = chord:get_id(Node),
+        ?assertEqual(NodeId, SuccPred#node_info.id),
         
         %% Predecessor's successor should be this node
-        {ok, PredSucc} = chord:get_successor(Predecessor),
-        ?assertEqual(Node, PredSucc)
+        PredSucc = chord:get_successor(Predecessor#node_info.pid),
+        ?assertEqual(NodeId, PredSucc#node_info.id)
     end, Nodes),
     
     %% Stop all nodes
@@ -153,14 +158,14 @@ test_multinode_stabilization() ->
 %% Test graceful node departure
 test_graceful_departure() ->
     %% Start three nodes
-    {ok, Node1} = chord:start_node(1, 8001),
-    {ok, Node2} = chord:start_node(2, 8002),
-    {ok, Node3} = chord:start_node(3, 8003),
+    {ok, Node1} = chord:start_node(1, 9301),
+    {ok, Node2} = chord:start_node(2, 9302),
+    {ok, Node3} = chord:start_node(3, 9303),
     
     %% Create ring
     ok = chord:create_ring(Node1),
-    ok = chord:join_ring(Node2, "localhost", 8001),
-    ok = chord:join_ring(Node3, "localhost", 8001),
+    ok = chord:join_ring(Node2, "localhost", 9301),
+    ok = chord:join_ring(Node3, "localhost", 9301),
     
     timer:sleep(2000),
     
@@ -184,15 +189,18 @@ test_graceful_departure() ->
     timer:sleep(2000),
     
     %% Verify ring is still consistent
-    {ok, Succ1} = chord:get_successor(Node1),
-    {ok, Pred1} = chord:get_predecessor(Node1),
-    {ok, Succ3} = chord:get_successor(Node3),
-    {ok, Pred3} = chord:get_predecessor(Node3),
+    Succ1 = chord:get_successor(Node1),
+    Pred1 = chord:get_predecessor(Node1),
+    Succ3 = chord:get_successor(Node3),
+    Pred3 = chord:get_predecessor(Node3),
     
-    ?assertEqual(3, Succ1#node_info.id),
-    ?assertEqual(3, Pred1#node_info.id),
-    ?assertEqual(1, Succ3#node_info.id),
-    ?assertEqual(1, Pred3#node_info.id),
+    NodeId1 = chord:get_id(Node1),
+    NodeId3 = chord:get_id(Node3),
+    
+    ?assertEqual(NodeId3, Succ1#node_info.id),
+    ?assertEqual(NodeId3, Pred1#node_info.id),
+    ?assertEqual(NodeId1, Succ3#node_info.id),
+    ?assertEqual(NodeId1, Pred3#node_info.id),
     
     %% Verify all keys are still accessible
     lists:foreach(fun({K, V}) ->
@@ -206,14 +214,14 @@ test_graceful_departure() ->
 %% Test failure detection
 test_failure_detection() ->
     %% Start three nodes
-    {ok, Node1} = chord:start_node(1, 8001),
-    {ok, Node2} = chord:start_node(2, 8002),
-    {ok, Node3} = chord:start_node(3, 8003),
+    {ok, Node1} = chord:start_node(1, 9401),
+    {ok, Node2} = chord:start_node(2, 9402),
+    {ok, Node3} = chord:start_node(3, 9403),
     
     %% Create ring
     ok = chord:create_ring(Node1),
-    ok = chord:join_ring(Node2, "localhost", 8001),
-    ok = chord:join_ring(Node3, "localhost", 8001),
+    ok = chord:join_ring(Node2, "localhost", 9401),
+    ok = chord:join_ring(Node3, "localhost", 9401),
     
     timer:sleep(2000),
     
@@ -227,16 +235,19 @@ test_failure_detection() ->
     timer:sleep(3000),
     
     %% Verify ring has healed
-    {ok, Succ1} = chord:get_successor(Node1),
-    {ok, Pred1} = chord:get_predecessor(Node1),
-    {ok, Succ3} = chord:get_successor(Node3),
-    {ok, Pred3} = chord:get_predecessor(Node3),
+    Succ1 = chord:get_successor(Node1),
+    Pred1 = chord:get_predecessor(Node1),
+    Succ3 = chord:get_successor(Node3),
+    Pred3 = chord:get_predecessor(Node3),
+    
+    NodeId1 = chord:get_id(Node1),
+    NodeId3 = chord:get_id(Node3),
     
     %% Node1 and Node3 should now point to each other
-    ?assertEqual(3, Succ1#node_info.id),
-    ?assertEqual(3, Pred1#node_info.id),
-    ?assertEqual(1, Succ3#node_info.id),
-    ?assertEqual(1, Pred3#node_info.id),
+    ?assertEqual(NodeId3, Succ1#node_info.id),
+    ?assertEqual(NodeId3, Pred1#node_info.id),
+    ?assertEqual(NodeId1, Succ3#node_info.id),
+    ?assertEqual(NodeId1, Pred3#node_info.id),
     
     %% Key should still be accessible
     {ok, Value} = chord:get(Node1, <<"test_key">>),
@@ -249,11 +260,11 @@ test_failure_detection() ->
 test_ring_consistency_after_joins() ->
     %% Start and join 5 nodes
     Nodes = lists:map(fun(I) ->
-        Port = 8000 + I,
+        Port = 9500 + I,
         {ok, Node} = chord:start_node(I, Port),
         if 
             I == 1 -> chord:create_ring(Node);
-            true -> chord:join_ring(Node, "localhost", 8001)
+            true -> chord:join_ring(Node, "localhost", 9501)
         end,
         timer:sleep(500),
         Node
@@ -272,11 +283,11 @@ test_ring_consistency_after_joins() ->
 test_key_distribution() ->
     %% Start 3 nodes
     Nodes = lists:map(fun(I) ->
-        Port = 8000 + I,
+        Port = 9600 + I,
         {ok, Node} = chord:start_node(I, Port),
         if 
             I == 1 -> chord:create_ring(Node);
-            true -> chord:join_ring(Node, "localhost", 8001)
+            true -> chord:join_ring(Node, "localhost", 9601)
         end,
         timer:sleep(500),
         Node
@@ -316,7 +327,7 @@ test_key_distribution() ->
 %% Test concurrent node joins
 test_concurrent_joins() ->
     %% Start first node
-    {ok, Node1} = chord:start_node(1, 8001),
+    {ok, Node1} = chord:start_node(1, 9701),
     ok = chord:create_ring(Node1),
     
     timer:sleep(500),
@@ -324,9 +335,9 @@ test_concurrent_joins() ->
     %% Start multiple nodes concurrently
     Pids = lists:map(fun(I) ->
         spawn(fun() ->
-            Port = 8000 + I,
+            Port = 9700 + I,
             {ok, Node} = chord:start_node(I, Port),
-            ok = chord:join_ring(Node, "localhost", 8001),
+            ok = chord:join_ring(Node, "localhost", 9701),
             receive
                 stop -> chord:stop_node(Node)
             end
@@ -349,13 +360,13 @@ test_concurrent_joins() ->
 %% Test node departure with key transfer
 test_departure_with_key_transfer() ->
     %% Start three nodes
-    {ok, Node1} = chord:start_node(1, 8001),
-    {ok, Node2} = chord:start_node(2, 8002),
-    {ok, Node3} = chord:start_node(3, 8003),
+    {ok, Node1} = chord:start_node(1, 9801),
+    {ok, Node2} = chord:start_node(2, 9802),
+    {ok, Node3} = chord:start_node(3, 9803),
     
     ok = chord:create_ring(Node1),
-    ok = chord:join_ring(Node2, "localhost", 8001),
-    ok = chord:join_ring(Node3, "localhost", 8001),
+    ok = chord:join_ring(Node2, "localhost", 9801),
+    ok = chord:join_ring(Node3, "localhost", 9801),
     
     timer:sleep(2000),
     
@@ -387,11 +398,11 @@ test_departure_with_key_transfer() ->
 test_failure_recovery() ->
     %% Start four nodes
     Nodes = lists:map(fun(I) ->
-        Port = 8000 + I,
+        Port = 9900 + I,
         {ok, Node} = chord:start_node(I, Port),
         if 
             I == 1 -> chord:create_ring(Node);
-            true -> chord:join_ring(Node, "localhost", 8001)
+            true -> chord:join_ring(Node, "localhost", 9901)
         end,
         timer:sleep(500),
         Node
@@ -412,15 +423,18 @@ test_failure_recovery() ->
     timer:sleep(4000),
     
     %% Verify remaining nodes form consistent ring
-    {ok, Succ1} = chord:get_successor(Node1),
-    {ok, Pred1} = chord:get_predecessor(Node1),
-    {ok, Succ4} = chord:get_successor(Node4),
-    {ok, Pred4} = chord:get_predecessor(Node4),
+    Succ1 = chord:get_successor(Node1),
+    Pred1 = chord:get_predecessor(Node1),
+    Succ4 = chord:get_successor(Node4),
+    Pred4 = chord:get_predecessor(Node4),
     
-    ?assertEqual(4, Succ1#node_info.id),
-    ?assertEqual(4, Pred1#node_info.id),
-    ?assertEqual(1, Succ4#node_info.id),
-    ?assertEqual(1, Pred4#node_info.id),
+    NodeId1 = chord:get_id(Node1),
+    NodeId4 = chord:get_id(Node4),
+    
+    ?assertEqual(NodeId4, Succ1#node_info.id),
+    ?assertEqual(NodeId4, Pred1#node_info.id),
+    ?assertEqual(NodeId1, Succ4#node_info.id),
+    ?assertEqual(NodeId1, Pred4#node_info.id),
     
     %% Data should still be accessible
     {ok, Value} = chord:get(Node1, <<"recovery_key">>),
@@ -446,6 +460,6 @@ follow_successors(CurrentNode, StartNode, Visited) ->
             ?assertEqual(StartNode, CurrentNode),
             Visited;
         false ->
-            {ok, Successor} = chord:get_successor(CurrentNode),
-            follow_successors(Successor, StartNode, [CurrentNode | Visited])
+            Successor = chord:get_successor(CurrentNode),
+            follow_successors(Successor#node_info.pid, StartNode, [CurrentNode | Visited])
     end.

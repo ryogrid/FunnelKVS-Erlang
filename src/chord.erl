@@ -308,8 +308,14 @@ handle_call({receive_keys, KeyValuePairs}, _From, #chord_state{kvs_store = Store
 
 handle_call({rpc_request, Method, Args}, _From, State) ->
     %% Handle RPC requests from chord_rpc server
-    Result = handle_rpc_request(Method, Args, State),
-    {reply, Result, State};
+    case handle_rpc_request(Method, Args, State) of
+        {ok, Response, NewState} ->
+            {reply, {ok, Response}, NewState};
+        {ok, Response} ->
+            {reply, {ok, Response}, State};
+        Error ->
+            {reply, Error, State}
+    end;
 
 handle_call({notify, Node}, _From, State) ->
     NewState = handle_notify_internal(Node, State),
@@ -322,7 +328,9 @@ handle_call(create_ring, _From, #chord_state{self = Self} = State) ->
         successor = Self,
         successor_list = []
     },
-    {reply, ok, State2};
+    %% Start maintenance timers
+    State3 = start_maintenance_timers(State2),
+    {reply, ok, State3};
 
 handle_call({join_ring, Host, Port}, _From, State) ->
     %% Connect to existing node and join the ring
@@ -341,11 +349,17 @@ handle_call({join_ring, Host, Port}, _From, State) ->
                         predecessor = undefined
                     },
                     
+                    %% Start maintenance timers
+                    State3 = start_maintenance_timers(State2),
+                    
+                    %% Notify our new successor about us
+                    notify_rpc(Successor, State3#chord_state.self),
+                    
                     %% Request key transfer from successor
-                    transfer_keys_from_successor(State2, Successor),
+                    transfer_keys_from_successor(State3, Successor),
                     
                     chord_rpc:close(Socket),
-                    {reply, ok, State2};
+                    {reply, ok, State3};
                 Error ->
                     chord_rpc:close(Socket),
                     {reply, Error, State}
@@ -492,14 +506,18 @@ join_ring_internal(State, JoinIP, JoinPort) ->
     % TODO: Implement proper RPC to find successor
     State#chord_state{successor = JoinNode}.
 
-stabilize(#chord_state{self = Self, successor = Successor} = State) ->
+stabilize(#chord_state{self = Self, successor = Successor, predecessor = Pred} = State) ->
     % Reschedule timer
     erlang:send_after(?STABILIZE_INTERVAL, self(), stabilize),
     
-    % In single-node ring, successor is self - skip RPC
-    case Successor#node_info.id =:= Self#node_info.id of
+    % Special case: if we have no predecessor and successor is self,
+    % check if there's a new node between us
+    case Successor#node_info.id =:= Self#node_info.id andalso Pred =/= undefined of
         true ->
-            State;  % Nothing to do in single-node ring
+            % Someone joined, make them our successor
+            State#chord_state{successor = Pred};
+        false when Successor#node_info.id =:= Self#node_info.id ->
+            State;  % Still alone in the ring
         false ->
             % Check if successor's predecessor is between us and successor
             case get_predecessor_rpc(Successor) of
@@ -602,8 +620,9 @@ find_successor_internal(Key, #chord_state{
             end
     end.
 
-handle_notify_internal(Node, #chord_state{self = Self, predecessor = Pred} = State) ->
-    case Pred of
+handle_notify_internal(Node, #chord_state{self = Self, predecessor = Pred, successor = Succ} = State) ->
+    %% Update predecessor if needed
+    State2 = case Pred of
         undefined ->
             State#chord_state{predecessor = Node};
         _ ->
@@ -613,7 +632,18 @@ handle_notify_internal(Node, #chord_state{self = Self, predecessor = Pred} = Sta
                 false ->
                     State
             end
-    end.
+    end,
+    
+    %% If we are our own successor (single node ring) and a new node is notifying us,
+    %% it should become our successor (for initial ring formation)
+    State3 = case Succ#node_info.id =:= Self#node_info.id andalso Node#node_info.id =/= Self#node_info.id of
+        true ->
+            %% In a single-node ring that gets a notify, the new node should become our successor
+            State2#chord_state{successor = Node};
+        false ->
+            State2
+    end,
+    State3.
 
 get_predecessor_rpc(#node_info{pid = Pid}) when Pid =:= self() ->
     {error, self_reference};
@@ -725,8 +755,8 @@ handle_rpc_request(get_successor, [], #chord_state{successor = Succ}) ->
     {ok, encode_node_info(Succ)};
 handle_rpc_request(notify, [NodeInfo], State) ->
     Node = decode_node_info(NodeInfo),
-    _NewState = handle_notify_internal(Node, State),
-    {ok, ok};
+    NewState = handle_notify_internal(Node, State),
+    {ok, ok, NewState};
 handle_rpc_request(put, [Key, Value], #chord_state{kvs_store = Store} = State) ->
     KeyHash = hash_key(Key),
     ResponsibleNode = find_successor_internal(KeyHash, State),
