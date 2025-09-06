@@ -22,13 +22,19 @@ FunnelKVS is a scalable, fault-tolerant distributed key-value storage system bui
   - Stabilization routines
   - Single-node ring operations
 
-### In Progress (Phase 3-6)
-- 🚧 Multi-node RPC communication
-- 🚧 Dynamic node join/leave
-- 🚧 Key migration and rebalancing
-- 🚧 Replication (N=3 successor list)
-- 🚧 Fault tolerance and recovery
-- 🚧 Anti-entropy with Merkle trees
+### Implemented (Phase 3 - In Progress)
+- ✅ **RPC framework** for multi-node communication
+- ✅ **TCP-based RPC** with binary protocol handshake
+- ✅ **Remote procedure calls**: find_successor, notify, transfer_keys
+- ✅ **Concurrent RPC connections** support
+- 🚧 Node join protocol with key transfer
+- 🚧 Dynamic ring membership
+
+### Planned (Phase 4-6)
+- 📋 Replication (N=3 successor list)
+- 📋 Fault tolerance and recovery
+- 📋 Anti-entropy with Merkle trees
+- 📋 Quorum-based consistency
 
 ## Architecture
 
@@ -186,13 +192,15 @@ erl -pa ebin -noshell -eval 'eunit:test(integration_tests, [verbose])' -s init s
 # Run demos
 erl -pa ebin -noshell -s demo run -s init stop
 erl -pa ebin -noshell -s demo_phase2 run -s init stop
+erl -pa ebin -noshell -s demo_phase3 run -s init stop
 ```
 
 ### Test Coverage
-- **74+ unit tests** across all modules
+- **84+ unit tests** across all modules
 - **Integration tests** for end-to-end workflows
 - **Protocol tests** for binary encoding/decoding
 - **Chord tests** for DHT operations
+- **RPC tests** for multi-node communication
 
 ## Performance
 
@@ -206,7 +214,7 @@ Current single-node performance (Phase 1):
 ### Phase Completion
 - ✅ **Phase 1**: Basic KVS with TCP server/client (100% complete)
 - ✅ **Phase 2**: Chord DHT foundation (100% complete)
-- 🚧 **Phase 3**: Node join/leave protocols (0% complete)
+- 🚧 **Phase 3**: Node join/leave protocols (50% complete)
 - 📋 **Phase 4**: Replication & consistency (planned)
 - 📋 **Phase 5**: Production features (planned)
 - 📋 **Phase 6**: Client tools & documentation (planned)
@@ -214,8 +222,12 @@ Current single-node performance (Phase 1):
 ### Roadmap
 
 #### Phase 3 (Current)
-- [ ] RPC framework for node communication
-- [ ] Node join protocol with key transfer
+- [x] RPC framework for node communication
+- [x] TCP-based RPC with handshake protocol
+- [x] Remote procedure calls implementation
+- [x] Key transfer preparation logic
+- [ ] Node join protocol with automatic key migration
+- [ ] Multi-node ring stabilization
 - [ ] Graceful node departure
 - [ ] Failure detection
 
@@ -244,9 +256,14 @@ Current single-node performance (Phase 1):
 ├── src/                 # Source code
 │   ├── kvs_store.erl   # Local KV storage
 │   ├── chord.erl       # Chord DHT protocol
+│   ├── chord_rpc.erl   # RPC framework for multi-node
 │   ├── funnelkvs_*.erl # Server, client, protocol
 ├── test/               # Test files
+│   ├── *_tests.erl    # Unit tests
+│   └── chord_rpc_tests.erl # RPC tests
 ├── include/            # Header files
+│   └── chord.hrl      # Chord data structures
+├── demo*.erl          # Demo scripts for each phase
 ├── ebin/              # Compiled beam files
 ├── doc/               # Documentation
 └── Makefile           # Build configuration
@@ -306,7 +323,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Status
 
-![Tests](https://img.shields.io/badge/tests-74%20passing-brightgreen)
-![Phase](https://img.shields.io/badge/phase-2%20of%206-orange)
+![Tests](https://img.shields.io/badge/tests-84%20passing-brightgreen)
+![Phase](https://img.shields.io/badge/phase-3%20(50%25)-orange)
 ![Erlang](https://img.shields.io/badge/erlang-%E2%89%A524-red)
 ![License](https://img.shields.io/badge/license-MIT-blue)
