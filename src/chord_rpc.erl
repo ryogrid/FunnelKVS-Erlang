@@ -5,7 +5,7 @@
 
 %% API
 -export([start_server/1, start_server/2, stop_server/1]).
--export([connect/2, disconnect/1, call/3]).
+-export([connect/2, disconnect/1, close/1, call/3]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2,
@@ -67,6 +67,9 @@ connect(Host, Port) ->
 
 disconnect(Socket) ->
     gen_tcp:close(Socket).
+
+close(Socket) ->
+    disconnect(Socket).
 
 call(Socket, Method, Args) ->
     % Encode the RPC request
@@ -196,53 +199,20 @@ handle_rpc_loop(Socket, ChordNode) ->
 
 process_rpc_request(Method, Args, ChordNode) ->
     try
-        Result = case Method of
-            find_successor when ChordNode =/= undefined ->
-                Successor = chord:find_successor(ChordNode, Args),
-                {rpc_response, ok, Successor};
-            
-            get_predecessor when ChordNode =/= undefined ->
-                Pred = chord:get_predecessor(ChordNode),
-                {rpc_response, ok, Pred};
-            
-            notify when ChordNode =/= undefined ->
-                ok = chord:notify(ChordNode, Args),
-                {rpc_response, ok, ok};
-            
-            get_successor_list when ChordNode =/= undefined ->
-                SuccList = chord:get_successor_list(ChordNode),
-                {rpc_response, ok, SuccList};
-            
-            transfer_keys when ChordNode =/= undefined ->
-                {TargetNode, Range} = Args,
-                Keys = chord:transfer_keys(ChordNode, TargetNode, Range),
-                {rpc_response, ok, Keys};
-            
-            get_key_value when ChordNode =/= undefined ->
-                case chord:get(ChordNode, Args) of
-                    {ok, Value} ->
-                        {rpc_response, ok, {Args, Value}};
-                    {error, not_found} ->
-                        {rpc_response, error, not_found}
-                end;
-            
-            put_key_value when ChordNode =/= undefined ->
-                {Key, Value} = Args,
-                ok = chord:put(ChordNode, Key, Value),
-                {rpc_response, ok, ok};
-            
-            get_id when ChordNode =/= undefined ->
-                Id = chord:get_id(ChordNode),
-                {rpc_response, ok, Id};
-            
-            get_successor when ChordNode =/= undefined ->
-                Successor = chord:get_successor(ChordNode),
-                {rpc_response, ok, Successor};
-            
+        % Delegate all RPC requests to the chord node's handle_rpc_request
+        case ChordNode of
+            undefined ->
+                {rpc_response, error, no_chord_node};
             _ ->
-                {rpc_response, error, {unknown_method, Method}}
-        end,
-        Result
+                case gen_server:call(ChordNode, {rpc_request, Method, Args}) of
+                    {ok, Result} ->
+                        {rpc_response, ok, Result};
+                    {error, Reason} ->
+                        {rpc_response, error, Reason};
+                    Result ->
+                        {rpc_response, ok, Result}
+                end
+        end
     catch
         Type:Error ->
             {rpc_response, error, {Type, Error}}

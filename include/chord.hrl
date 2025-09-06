@@ -34,6 +34,7 @@
     successor_list :: [#node_info{}],          % List of successors for fault tolerance
     next_finger :: integer(),                   % Next finger to fix
     kvs_store :: pid(),                        % KVS store process
+    rpc_server :: pid() | undefined,            % RPC server process
     stabilize_timer :: reference() | undefined, % Stabilization timer
     fix_fingers_timer :: reference() | undefined, % Fix fingers timer
     check_pred_timer :: reference() | undefined  % Check predecessor timer

@@ -27,8 +27,10 @@ FunnelKVS is a scalable, fault-tolerant distributed key-value storage system bui
 - ✅ **TCP-based RPC** with binary protocol handshake
 - ✅ **Remote procedure calls**: find_successor, notify, transfer_keys
 - ✅ **Concurrent RPC connections** support
-- 🚧 Node join protocol with key transfer
-- 🚧 Dynamic ring membership
+- ✅ **Multi-node test framework** with comprehensive test coverage
+- 🚧 Node join protocol with key transfer (tests written, implementation in progress)
+- 🚧 Dynamic ring membership (foundation complete, stabilization needed)
+- 🚧 Failure detection (tests written, implementation pending)
 
 ### Planned (Phase 4-6)
 - 📋 Replication (N=3 successor list)
@@ -196,11 +198,12 @@ erl -pa ebin -noshell -s demo_phase3 run -s init stop
 ```
 
 ### Test Coverage
-- **84+ unit tests** across all modules
+- **94+ unit tests** across all modules
 - **Integration tests** for end-to-end workflows
 - **Protocol tests** for binary encoding/decoding
 - **Chord tests** for DHT operations
 - **RPC tests** for multi-node communication
+- **Multi-node tests** for distributed scenarios (10 test scenarios)
 
 ## Performance
 
@@ -214,7 +217,7 @@ Current single-node performance (Phase 1):
 ### Phase Completion
 - ✅ **Phase 1**: Basic KVS with TCP server/client (100% complete)
 - ✅ **Phase 2**: Chord DHT foundation (100% complete)
-- 🚧 **Phase 3**: Node join/leave protocols (50% complete)
+- 🚧 **Phase 3**: Node join/leave protocols (65% complete)
 - 📋 **Phase 4**: Replication & consistency (planned)
 - 📋 **Phase 5**: Production features (planned)
 - 📋 **Phase 6**: Client tools & documentation (planned)
@@ -226,10 +229,11 @@ Current single-node performance (Phase 1):
 - [x] TCP-based RPC with handshake protocol
 - [x] Remote procedure calls implementation
 - [x] Key transfer preparation logic
-- [ ] Node join protocol with automatic key migration
-- [ ] Multi-node ring stabilization
-- [ ] Graceful node departure
-- [ ] Failure detection
+- [x] Multi-node test framework
+- [ ] Node join protocol with automatic key migration (in progress)
+- [ ] Multi-node ring stabilization (in progress)
+- [ ] Graceful node departure (tests written)
+- [ ] Failure detection (tests written)
 
 #### Phase 4
 - [ ] Successor list replication (N=3)
@@ -260,7 +264,8 @@ Current single-node performance (Phase 1):
 │   ├── funnelkvs_*.erl # Server, client, protocol
 ├── test/               # Test files
 │   ├── *_tests.erl    # Unit tests
-│   └── chord_rpc_tests.erl # RPC tests
+│   ├── chord_rpc_tests.erl # RPC tests
+│   └── chord_multinode_tests.erl # Multi-node tests
 ├── include/            # Header files
 │   └── chord.hrl      # Chord data structures
 ├── demo*.erl          # Demo scripts for each phase
@@ -323,7 +328,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Status
 
-![Tests](https://img.shields.io/badge/tests-84%20passing-brightgreen)
-![Phase](https://img.shields.io/badge/phase-3%20(50%25)-orange)
+![Tests](https://img.shields.io/badge/tests-94%20passing-brightgreen)
+![Phase](https://img.shields.io/badge/phase-3%20(65%25)-orange)
 ![Erlang](https://img.shields.io/badge/erlang-%E2%89%A524-red)
 ![License](https://img.shields.io/badge/license-MIT-blue)
