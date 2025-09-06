@@ -59,12 +59,24 @@ Binary protocol with request-response pattern:
 - Response: `<<Status:8, ValueLen:32, Value:ValueLen/binary>>`
 - Operations: GET (0x01), PUT (0x02), DELETE (0x03)
 
+## Development Methodology
+
+**Test-First Development (TDD)**: All features must be developed using test-first approach:
+1. Write failing tests that define the expected behavior
+2. Implement the minimal code to make tests pass
+3. Refactor while keeping tests green
+4. Repeat for each feature
+
+This ensures high code quality, comprehensive test coverage, and maintainable codebase.
+
 ## Testing Strategy
 
 - Unit tests for each module in `test/*_tests.erl`
 - Property-based tests using PropEr for protocol and hashing
 - Integration tests simulating multi-node scenarios
 - Common test suites for distributed system testing
+- Test files should be created BEFORE implementation files
+- Run `make test` frequently during development
 
 ## Directory Structure
 

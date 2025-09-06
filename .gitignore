@@ -1,0 +1,66 @@
+# Erlang/OTP
+*.beam
+*.ez
+*.dump
+erl_crash.dump
+*.app
+
+# Build directories
+ebin/
+_build/
+deps/
+_deps/
+
+# Documentation
+doc/
+docs/
+*.edoc
+
+# Test artifacts
+.eunit/
+*.coverdata
+cover/
+logs/
+ct_run.*/
+ct_default.css
+
+# Development tools
+.rebar
+.rebar3
+rebar3.crashdump
+.erlang.mk/
+*.plt
+.dialyzer_plt
+
+# Editor and IDE files
+*.swp
+*.swo
+*~
+.#*
+\#*#
+.DS_Store
+.idea/
+*.iml
+.vscode/
+*.sublime-*
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Project specific
+/log/
+/tmp/
+*.log
+
+# Node-related (if using any JS tools)
+node_modules/
+
+# Python-related (if using any Python tools)
+__pycache__/
+*.pyc
+.venv/
+
+# Other
+.env
+.env.local
