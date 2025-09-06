@@ -10,7 +10,7 @@
 -export([key_belongs_to/3, between/3]).
 -export([init_finger_table/1, find_successor/2]).
 -export([get_id/1, get_successor/1, get_predecessor/1, get_finger_table/1, get_successor_list/1]).
--export([put/3, get/2, delete/2]).
+-export([put/3, put/4, get/2, get/3, delete/2]).
 -export([closest_preceding_node/3]).
 -export([notify/2, transfer_keys/3]).
 -export([get_local_keys/1, get_ring_nodes/1]).
@@ -123,11 +123,18 @@ get_finger_table(Pid) ->
 get_successor_list(Pid) ->
     gen_server:call(Pid, get_successor_list).
 
+%% Default to quorum consistency
 put(Pid, Key, Value) ->
-    gen_server:call(Pid, {put, Key, Value}).
+    put(Pid, Key, Value, quorum).
+
+put(Pid, Key, Value, Consistency) ->
+    gen_server:call(Pid, {put, Key, Value, Consistency}, 10000).
 
 get(Pid, Key) ->
-    gen_server:call(Pid, {get, Key}).
+    get(Pid, Key, quorum).
+
+get(Pid, Key, Consistency) ->
+    gen_server:call(Pid, {get, Key, Consistency}, 10000).
 
 delete(Pid, Key) ->
     gen_server:call(Pid, {delete, Key}).
@@ -236,42 +243,86 @@ handle_call({find_successor, Key}, _From, State) ->
     Successor = find_successor_internal(KeyHash, State),
     {reply, Successor, State};
 
-handle_call({put, Key, Value}, _From, #chord_state{kvs_store = Store, self = Self} = State) ->
+% Legacy put without consistency level (defaults to quorum)
+handle_call({put, Key, Value}, From, State) ->
+    handle_call({put, Key, Value, quorum}, From, State);
+
+% Put with consistency level
+handle_call({put, Key, Value, Consistency}, _From, #chord_state{kvs_store = Store, self = Self, successor_list = SuccList} = State) ->
     KeyHash = hash_key(Key),
     ResponsibleNode = find_successor_internal(KeyHash, State),
     
     Result = case ResponsibleNode#node_info.id =:= Self#node_info.id of
         true ->
             % We are responsible for this key
-            kvs_store:put(Store, Key, Value);
+            case Consistency of
+                quorum ->
+                    % Quorum write - wait for W responses where W = (N+1)/2
+                    quorum_put(Store, Key, Value, SuccList);
+                eventual ->
+                    % Eventual consistency - just store and replicate async
+                    kvs_store:put(Store, Key, Value),
+                    replicate_to_successors(Key, Value, SuccList),
+                    ok;
+                _ ->
+                    % Default to eventual consistency
+                    kvs_store:put(Store, Key, Value),
+                    replicate_to_successors(Key, Value, SuccList),
+                    ok
+            end;
         false ->
-            % Forward to responsible node
-            forward_to_remote_node(ResponsibleNode, {put, Key, Value})
+            % Forward to responsible node with consistency level
+            case forward_to_remote_node(ResponsibleNode, {put, Key, Value, Consistency}) of
+                {ok, ok} -> ok;  % Unwrap RPC response
+                {ok, Result0} -> Result0;
+                Error -> Error
+            end
     end,
     {reply, Result, State};
 
-handle_call({get, Key}, _From, #chord_state{kvs_store = Store, self = Self} = State) ->
+% Legacy get without consistency level (defaults to quorum)
+handle_call({get, Key}, From, State) ->
+    handle_call({get, Key, quorum}, From, State);
+
+% Get with consistency level
+handle_call({get, Key, Consistency}, _From, #chord_state{kvs_store = Store, self = Self, successor_list = SuccList} = State) ->
     KeyHash = hash_key(Key),
     ResponsibleNode = find_successor_internal(KeyHash, State),
     
     Result = case ResponsibleNode#node_info.id =:= Self#node_info.id of
         true ->
             % We are responsible for this key
-            kvs_store:get(Store, Key);
+            case Consistency of
+                quorum ->
+                    % Quorum read - wait for R responses where R = (N+1)/2
+                    quorum_get(Store, Key, SuccList);
+                eventual ->
+                    % Eventual consistency - just read locally
+                    kvs_store:get(Store, Key);
+                _ ->
+                    % Default to local read
+                    kvs_store:get(Store, Key)
+            end;
         false ->
-            % Forward to responsible node
-            forward_to_remote_node(ResponsibleNode, {get, Key})
+            % Forward to responsible node with consistency level
+            case forward_to_remote_node(ResponsibleNode, {get, Key, Consistency}) of
+                {ok, Result0} -> Result0;  % Unwrap RPC response
+                Error -> Error
+            end
     end,
     {reply, Result, State};
 
-handle_call({delete, Key}, _From, #chord_state{kvs_store = Store, self = Self} = State) ->
+handle_call({delete, Key}, _From, #chord_state{kvs_store = Store, self = Self, successor_list = SuccList} = State) ->
     KeyHash = hash_key(Key),
     ResponsibleNode = find_successor_internal(KeyHash, State),
     
     Result = case ResponsibleNode#node_info.id =:= Self#node_info.id of
         true ->
             % We are responsible for this key
-            kvs_store:delete(Store, Key);
+            kvs_store:delete(Store, Key),
+            % Delete from replicas
+            delete_from_successors(Key, SuccList),
+            ok;
         false ->
             % Forward to responsible node
             forward_to_remote_node(ResponsibleNode, {delete, Key})
@@ -325,6 +376,11 @@ handle_call(get_state, _From, State) ->
     {reply, {ok, State}, State};
 
 handle_call({put_local, Key, Value}, _From, #chord_state{kvs_store = Store} = State) ->
+    Result = kvs_store:put(Store, Key, Value),
+    {reply, Result, State};
+
+handle_call({put_replica, Key, Value}, _From, #chord_state{kvs_store = Store} = State) ->
+    % Store replica without further replication
     Result = kvs_store:put(Store, Key, Value),
     {reply, Result, State};
 
@@ -448,6 +504,11 @@ handle_cast({update_successor, NewSucc}, State) ->
     NewState = update_successor_list(NewSucc, State),
     {noreply, NewState#chord_state{successor = NewSucc}};
 
+handle_cast({update_successor_list_only}, #chord_state{successor = Successor} = State) ->
+    % Update successor list without changing successor
+    NewState = update_successor_list(Successor, State),
+    {noreply, NewState};
+
 handle_cast({update_predecessor, NewPred}, State) ->
     {noreply, State#chord_state{predecessor = NewPred}};
 
@@ -475,6 +536,13 @@ handle_info(check_predecessor, State) ->
     NewState = check_predecessor(State),
     {noreply, NewState};
 
+handle_info(sync_replicas, State) ->
+    % Schedule next sync
+    erlang:send_after(?REPLICATE_INTERVAL, self(), sync_replicas),
+    % Sync replicas asynchronously
+    spawn(fun() -> sync_replicas_async(State) end),
+    {noreply, State};
+
 handle_info(_Info, State) ->
     {noreply, State}.
 
@@ -498,6 +566,7 @@ start_maintenance_timers(State) ->
     StabilizeTimer = erlang:send_after(?STABILIZE_INTERVAL, self(), stabilize),
     FixFingersTimer = erlang:send_after(?FIX_FINGERS_INTERVAL, self(), fix_fingers),
     CheckPredTimer = erlang:send_after(?CHECK_PREDECESSOR_INTERVAL, self(), check_predecessor),
+    erlang:send_after(?REPLICATE_INTERVAL, self(), sync_replicas),
     
     State#chord_state{
         stabilize_timer = StabilizeTimer,
@@ -564,11 +633,15 @@ do_stabilize_async(NodePid, #chord_state{self = Self, successor = Successor, pre
                                     notify_rpc(SuccPred, Self);
                                 false ->
                                     % Notify our successor
-                                    notify_rpc(Successor, Self)
+                                    notify_rpc(Successor, Self),
+                                    % Update successor list
+                                    gen_server:cast(NodePid, {update_successor_list_only})
                             end;
                         _ ->
                             % Notify our successor anyway
-                            notify_rpc(Successor, Self)
+                            notify_rpc(Successor, Self),
+                            % Update successor list
+                            gen_server:cast(NodePid, {update_successor_list_only})
                     end
             end
     end.
@@ -620,26 +693,46 @@ check_predecessor(#chord_state{predecessor = Pred} = State) ->
     end.
 
 update_successor_list(NewSucc, #chord_state{self = Self, successor_list = OldList} = State) ->
-    % Build successor list by asking successor for its successor
+    % Build successor list by getting successor's successor list
     case NewSucc#node_info.id =:= Self#node_info.id of
         true ->
             % Single node ring
             State#chord_state{successor_list = []};
         false ->
-            % Try to get successor's successor
-            case get_successor_rpc(NewSucc) of
-                {ok, SuccSucc} when SuccSucc#node_info.id =/= Self#node_info.id ->
-                    % Build list with up to 3 successors
-                    NewList = build_successor_list([NewSucc, SuccSucc], 3),
+            % Get successor's successor list and prepend our successor
+            case get_successor_list_rpc(NewSucc) of
+                {ok, SuccList} ->
+                    % Build list: our successor + its successors (up to SUCCESSOR_LIST_SIZE total)
+                    AllSuccessors = [NewSucc | SuccList],
+                    % Remove ourselves and duplicates, limit to SUCCESSOR_LIST_SIZE
+                    FilteredList = lists:filter(fun(N) -> 
+                        N#node_info.id =/= Self#node_info.id
+                    end, AllSuccessors),
+                    UniqList = lists:usort(fun(A, B) -> 
+                        A#node_info.id =< B#node_info.id 
+                    end, FilteredList),
+                    NewList = lists:sublist(UniqList, ?SUCCESSOR_LIST_SIZE),
                     State#chord_state{successor_list = NewList};
                 _ ->
-                    % Just use the new successor
+                    % If we can't get the list, just use the new successor
                     State#chord_state{successor_list = [NewSucc]}
             end
     end.
 
-build_successor_list(Nodes, MaxSize) ->
-    lists:sublist(lists:filter(fun(N) -> N =/= undefined end, Nodes), MaxSize).
+get_successor_list_rpc(#node_info{ip = IP, port = Port}) ->
+    case chord_rpc:connect(inet:ntoa(IP), Port) of
+        {ok, Socket} ->
+            Result = chord_rpc:call(Socket, get_successor_list, []),
+            chord_rpc:close(Socket),
+            case Result of
+                {ok, EncodedList} ->
+                    DecodedList = [decode_node_info(NodeInfo) || NodeInfo <- EncodedList],
+                    {ok, DecodedList};
+                Error -> Error
+            end;
+        Error -> Error
+    end.
+
 
 get_successor_rpc(#node_info{ip = IP, port = Port}) ->
     case chord_rpc:connect(inet:ntoa(IP), Port) of
@@ -651,6 +744,237 @@ get_successor_rpc(#node_info{ip = IP, port = Port}) ->
                 Error -> Error
             end;
         Error -> Error
+    end.
+
+replicate_to_successors(_Key, _Value, []) ->
+    ok;
+replicate_to_successors(Key, Value, SuccList) ->
+    % Replicate to up to REPLICATION_FACTOR-1 successors (we already have one copy)
+    ReplicaNodes = lists:sublist(SuccList, ?REPLICATION_FACTOR - 1),
+    lists:foreach(fun(Node) ->
+        spawn(fun() -> replicate_to_node(Node, Key, Value) end)
+    end, ReplicaNodes),
+    ok.
+
+replicate_to_node(#node_info{ip = IP, port = Port}, Key, Value) ->
+    case chord_rpc:connect(inet:ntoa(IP), Port) of
+        {ok, Socket} ->
+            chord_rpc:call(Socket, put_replica, [Key, Value]),
+            chord_rpc:close(Socket);
+        _ ->
+            % Replication failed, will be retried in next sync
+            ok
+    end.
+
+delete_from_successors(_Key, []) ->
+    ok;
+delete_from_successors(Key, SuccList) ->
+    % Delete from up to REPLICATION_FACTOR-1 successors
+    ReplicaNodes = lists:sublist(SuccList, ?REPLICATION_FACTOR - 1),
+    lists:foreach(fun(Node) ->
+        spawn(fun() -> delete_from_node(Node, Key) end)
+    end, ReplicaNodes),
+    ok.
+
+delete_from_node(#node_info{ip = IP, port = Port}, Key) ->
+    case chord_rpc:connect(inet:ntoa(IP), Port) of
+        {ok, Socket} ->
+            chord_rpc:call(Socket, delete_replica, [Key]),
+            chord_rpc:close(Socket);
+        _ ->
+            % Delete failed, will be handled in next sync
+            ok
+    end.
+
+sync_replicas_async(#chord_state{kvs_store = Store, self = Self, successor_list = SuccList, predecessor = Pred}) ->
+    % Get all keys we are responsible for (as primary)
+    {ok, AllKeys} = kvs_store:list_keys(Store),
+    
+    % Filter keys we are primary for
+    PrimaryKeys = lists:filter(fun(Key) ->
+        KeyHash = hash_key(Key),
+        AmIPrimary = case Pred of
+            undefined -> true;  % We're the only node
+            _ -> key_belongs_to(KeyHash, Pred#node_info.id, Self#node_info.id)
+        end,
+        AmIPrimary
+    end, AllKeys),
+    
+    % Ensure these keys are replicated to successors
+    case SuccList of
+        [] -> ok;
+        _ ->
+            ReplicaNodes = lists:sublist(SuccList, ?REPLICATION_FACTOR - 1),
+            lists:foreach(fun(Key) ->
+                {ok, Value} = kvs_store:get(Store, Key),
+                lists:foreach(fun(Node) ->
+                    % Check if replica exists and sync if needed
+                    sync_replica_to_node(Node, Key, Value)
+                end, ReplicaNodes)
+            end, PrimaryKeys)
+    end,
+    ok.
+
+sync_replica_to_node(#node_info{ip = IP, port = Port}, Key, Value) ->
+    case chord_rpc:connect(inet:ntoa(IP), Port) of
+        {ok, Socket} ->
+            % Check if replica exists
+            case chord_rpc:call(Socket, get_replica, [Key]) of
+                {ok, {ok, _ExistingValue}} ->
+                    % Replica exists, could check if update needed
+                    ok;
+                _ ->
+                    % Replica missing, replicate it
+                    chord_rpc:call(Socket, put_replica, [Key, Value])
+            end,
+            chord_rpc:close(Socket);
+        _ ->
+            % Node unreachable, skip
+            ok
+    end.
+
+%% Quorum-based operations
+quorum_put(Store, Key, Value, SuccList) ->
+    % Calculate quorum size: W = (N+1)/2
+    W = (?REPLICATION_FACTOR + 1) div 2,
+    
+    % Store locally first
+    kvs_store:put(Store, Key, Value),
+    LocalWrite = 1,
+    
+    % Get replica nodes
+    ReplicaNodes = lists:sublist(SuccList, ?REPLICATION_FACTOR - 1),
+    
+    % Spawn write operations to replicas
+    Parent = self(),
+    Ref = make_ref(),
+    
+    lists:foreach(fun(Node) ->
+        spawn(fun() ->
+            Result = write_to_replica(Node, Key, Value),
+            Parent ! {Ref, Result}
+        end)
+    end, ReplicaNodes),
+    
+    % Collect responses
+    WriteCount = collect_quorum_responses(Ref, length(ReplicaNodes), LocalWrite, W, 5000),
+    
+    % Return success if we got enough writes
+    case WriteCount >= W of
+        true -> ok;
+        false -> {error, insufficient_replicas}
+    end.
+
+quorum_get(Store, Key, SuccList) ->
+    % Calculate quorum size: R = (N+1)/2  
+    R = (?REPLICATION_FACTOR + 1) div 2,
+    
+    % Read locally first
+    LocalValue = kvs_store:get(Store, Key),
+    LocalRead = case LocalValue of
+        {ok, _} -> 1;
+        _ -> 0
+    end,
+    
+    % Get replica nodes
+    ReplicaNodes = lists:sublist(SuccList, ?REPLICATION_FACTOR - 1),
+    
+    % Spawn read operations from replicas
+    Parent = self(),
+    Ref = make_ref(),
+    
+    lists:foreach(fun(Node) ->
+        spawn(fun() ->
+            Result = read_from_replica(Node, Key),
+            Parent ! {Ref, Result}
+        end)
+    end, ReplicaNodes),
+    
+    % Collect responses
+    Values = case LocalValue of
+        {ok, V} -> [{V, 1}];
+        _ -> []
+    end,
+    AllValues = collect_read_responses(Ref, length(ReplicaNodes), Values, R, 5000),
+    
+    % Return the most common value (simple conflict resolution)
+    case AllValues of
+        [] -> {error, not_found};
+        _ ->
+            % Get the value with highest count (most recent for ties)
+            [{Value, _Count} | _] = lists:sort(fun({_, C1}, {_, C2}) -> C1 >= C2 end, AllValues),
+            {ok, Value}
+    end.
+
+write_to_replica(#node_info{ip = IP, port = Port}, Key, Value) ->
+    case chord_rpc:connect(inet:ntoa(IP), Port) of
+        {ok, Socket} ->
+            Result = chord_rpc:call(Socket, put_replica, [Key, Value]),
+            chord_rpc:close(Socket),
+            case Result of
+                {ok, ok} -> ok;
+                _ -> error
+            end;
+        _ ->
+            error
+    end.
+
+read_from_replica(#node_info{ip = IP, port = Port}, Key) ->
+    case chord_rpc:connect(inet:ntoa(IP), Port) of
+        {ok, Socket} ->
+            Result = chord_rpc:call(Socket, get_replica, [Key]),
+            chord_rpc:close(Socket),
+            Result;
+        _ ->
+            {error, unreachable}
+    end.
+
+collect_quorum_responses(_Ref, 0, Acc, _Needed, _Timeout) ->
+    Acc;
+collect_quorum_responses(Ref, Remaining, Acc, Needed, Timeout) when Acc >= Needed ->
+    % We have enough responses, drain remaining messages
+    receive
+        {Ref, _} -> collect_quorum_responses(Ref, Remaining - 1, Acc, Needed, 0)
+    after 0 ->
+        Acc
+    end;
+collect_quorum_responses(Ref, Remaining, Acc, Needed, Timeout) ->
+    receive
+        {Ref, ok} ->
+            collect_quorum_responses(Ref, Remaining - 1, Acc + 1, Needed, Timeout);
+        {Ref, _} ->
+            collect_quorum_responses(Ref, Remaining - 1, Acc, Needed, Timeout)
+    after Timeout ->
+        Acc
+    end.
+
+collect_read_responses(_Ref, 0, Values, _Needed, _Timeout) ->
+    Values;
+collect_read_responses(Ref, Remaining, Values, Needed, Timeout) when length(Values) >= Needed ->
+    % We have enough responses, drain remaining
+    receive
+        {Ref, _} -> collect_read_responses(Ref, Remaining - 1, Values, Needed, 0)
+    after 0 ->
+        Values
+    end;
+collect_read_responses(Ref, Remaining, Values, Needed, Timeout) ->
+    receive
+        {Ref, {ok, {ok, Value}}} ->
+            % Update value count
+            NewValues = update_value_count(Value, Values),
+            collect_read_responses(Ref, Remaining - 1, NewValues, Needed, Timeout);
+        {Ref, _} ->
+            collect_read_responses(Ref, Remaining - 1, Values, Needed, Timeout)
+    after Timeout ->
+        Values
+    end.
+
+update_value_count(Value, Values) ->
+    case lists:keyfind(Value, 1, Values) of
+        {Value, Count} ->
+            lists:keyreplace(Value, 1, Values, {Value, Count + 1});
+        false ->
+            [{Value, 1} | Values]
     end.
 
 find_successor_internal(Key, #chord_state{
@@ -842,33 +1166,69 @@ handle_rpc_request(notify, [NodeInfo], State) ->
     Node = decode_node_info(NodeInfo),
     NewState = handle_notify_internal(Node, State),
     {ok, ok, NewState};
-handle_rpc_request(put, [Key, Value], #chord_state{kvs_store = Store, self = Self} = State) ->
+% Handle put with consistency level
+handle_rpc_request(put, [Key, Value, Consistency], #chord_state{kvs_store = Store, self = Self, successor_list = SuccList} = State) ->
     KeyHash = hash_key(Key),
     ResponsibleNode = find_successor_internal(KeyHash, State),
     case ResponsibleNode#node_info.id =:= Self#node_info.id of
         true ->
-            kvs_store:put(Store, Key, Value);
+            Result = case Consistency of
+                quorum ->
+                    quorum_put(Store, Key, Value, SuccList);
+                _ ->
+                    kvs_store:put(Store, Key, Value),
+                    replicate_to_successors(Key, Value, SuccList),
+                    ok
+            end,
+            {ok, Result};
         false ->
-            forward_to_remote_node(ResponsibleNode, {put, Key, Value})
+            forward_to_remote_node(ResponsibleNode, {put, Key, Value, Consistency})
     end;
-handle_rpc_request(get, [Key], #chord_state{kvs_store = Store, self = Self} = State) ->
+% Handle legacy put without consistency level
+handle_rpc_request(put, [Key, Value], State) ->
+    handle_rpc_request(put, [Key, Value, eventual], State);
+handle_rpc_request(put_replica, [Key, Value], #chord_state{kvs_store = Store}) ->
+    % Store replica without further replication
+    kvs_store:put(Store, Key, Value),
+    {ok, ok};
+% Handle get with consistency level
+handle_rpc_request(get, [Key, Consistency], #chord_state{kvs_store = Store, self = Self, successor_list = SuccList} = State) ->
     KeyHash = hash_key(Key),
     ResponsibleNode = find_successor_internal(KeyHash, State),
     case ResponsibleNode#node_info.id =:= Self#node_info.id of
         true ->
-            kvs_store:get(Store, Key);
+            case Consistency of
+                quorum ->
+                    quorum_get(Store, Key, SuccList);
+                _ ->
+                    kvs_store:get(Store, Key)
+            end;
         false ->
-            forward_to_remote_node(ResponsibleNode, {get, Key})
+            forward_to_remote_node(ResponsibleNode, {get, Key, Consistency})
     end;
-handle_rpc_request(delete, [Key], #chord_state{kvs_store = Store, self = Self} = State) ->
+% Handle legacy get without consistency level  
+handle_rpc_request(get, [Key], State) ->
+    handle_rpc_request(get, [Key, eventual], State);
+handle_rpc_request(delete, [Key], #chord_state{kvs_store = Store, self = Self, successor_list = SuccList} = State) ->
     KeyHash = hash_key(Key),
     ResponsibleNode = find_successor_internal(KeyHash, State),
     case ResponsibleNode#node_info.id =:= Self#node_info.id of
         true ->
-            kvs_store:delete(Store, Key);
+            kvs_store:delete(Store, Key),
+            % Delete from replicas
+            delete_from_successors(Key, SuccList),
+            {ok, ok};
         false ->
             forward_to_remote_node(ResponsibleNode, {delete, Key})
     end;
+handle_rpc_request(delete_replica, [Key], #chord_state{kvs_store = Store}) ->
+    % Delete replica
+    kvs_store:delete(Store, Key),
+    {ok, ok};
+handle_rpc_request(get_replica, [Key], #chord_state{kvs_store = Store}) ->
+    % Get replica value directly from store
+    Result = kvs_store:get(Store, Key),
+    {ok, Result};
 handle_rpc_request(transfer_keys, [NodeId], #chord_state{kvs_store = Store, self = Self}) ->
     {ok, AllKeys} = kvs_store:list_keys(Store),
     TransferredKeys = lists:filter(fun(Key) ->
@@ -915,8 +1275,12 @@ forward_to_remote_node(#node_info{ip = IP, port = Port}, Request) ->
     case chord_rpc:connect(inet:ntoa(IP), Port) of
         {ok, Socket} ->
             Result = case Request of
+                {put, Key, Value, Consistency} ->
+                    chord_rpc:call(Socket, put, [Key, Value, Consistency]);
                 {put, Key, Value} ->
                     chord_rpc:call(Socket, put, [Key, Value]);
+                {get, Key, Consistency} ->
+                    chord_rpc:call(Socket, get, [Key, Consistency]);
                 {get, Key} ->
                     chord_rpc:call(Socket, get, [Key]);
                 {delete, Key} ->

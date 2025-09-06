@@ -41,16 +41,22 @@ FunnelKVS is a scalable, fault-tolerant distributed key-value storage system bui
 - ✅ **Failure detection** - automatic detection and ring repair
 - ✅ **Successor list** - maintains backup successors for fault tolerance
 
-### Planned (Phase 4)
-- 📋 Successor-list replication (N=3)
-- 📋 Replica synchronization
-- 📋 Quorum-based reads/writes
+### Implemented (Phase 4 - 100% Complete)
+- ✅ **Successor-list replication** (N=3) with automatic data distribution
+- ✅ **Replica synchronization** with periodic sync and repair
+- ✅ **Quorum-based operations** supporting both quorum and eventual consistency
 
-### Planned (Phase 5-6)
+### Planned (Phase 5)
 - 📋 Conflict resolution (last-write-wins)
 - 📋 Anti-entropy protocol
 - 📋 OTP supervision trees
 - 📋 Performance optimizations
+
+### Planned (Phase 6)
+- 📋 Enhanced CLI tools
+- 📋 Admin dashboard
+- 📋 Comprehensive documentation
+- 📋 Example applications
 
 ## Architecture
 
@@ -124,9 +130,18 @@ ok = chord:join_ring(Node2, "localhost", 9001).
 % The two-node ring will automatically stabilize
 % Both nodes will have bidirectional links after ~1-2 seconds
 
-% Store and retrieve data
+% Store and retrieve data with different consistency levels
+% Quorum consistency (default) - waits for majority of replicas
 ok = chord:put(Node1, <<"key1">>, <<"value1">>).
 {ok, <<"value1">>} = chord:get(Node2, <<"key1">>).
+
+% Eventual consistency - faster but may be temporarily inconsistent
+ok = chord:put(Node1, <<"key2">>, <<"value2">>, eventual).
+{ok, <<"value2">>} = chord:get(Node2, <<"key2">>, eventual).
+
+% Quorum consistency - ensures strong consistency
+ok = chord:put(Node1, <<"key3">>, <<"value3">>, quorum).
+{ok, <<"value3">>} = chord:get(Node2, <<"key3">>, quorum).
 ```
 
 ### Using the CLI Client
@@ -252,18 +267,24 @@ Current single-node performance (Phase 1):
 
 ## Development Status
 
-### Recent Improvements (Phase 3 Complete!)
-- **Fixed**: Routing loops in multi-node rings (major breakthrough!)
-- **Implemented**: Finger table population for O(log N) lookups
-- **Implemented**: Failure detection with automatic ring repair
-- **Added**: Successor list for fault tolerance
-- **Achievement**: Phase 3 100% complete - all features working!
+### Recent Improvements (Phase 4 Complete!)
+- **Phase 3 Achievements**:
+  - Fixed routing loops in multi-node rings
+  - Implemented finger table population for O(log N) lookups
+  - Added failure detection with automatic ring repair
+  - Maintained successor lists for fault tolerance
+- **Phase 4 Achievements**:
+  - Implemented N=3 replication factor
+  - Added automatic replica synchronization
+  - Implemented quorum-based reads/writes (R=W=2)
+  - Support for both quorum and eventual consistency
+  - Automatic repair of missing replicas
 
 ### Phase Completion
 - ✅ **Phase 1**: Basic KVS with TCP server/client (100% complete)
 - ✅ **Phase 2**: Chord DHT foundation (100% complete)
 - ✅ **Phase 3**: Node join/leave protocols (100% complete)
-- 📋 **Phase 4**: Replication & consistency (planned)
+- ✅ **Phase 4**: Replication & consistency (100% complete)
 - 📋 **Phase 5**: Production features (planned)
 - 📋 **Phase 6**: Client tools & documentation (planned)
 
@@ -285,18 +306,19 @@ Current single-node performance (Phase 1):
 - [x] Failure detection and automatic ring repair
 - [x] Successor list maintenance
 
-#### Phase 4 (Next)
-- [ ] Successor-list replication (N=3)
-- [ ] Replica synchronization
-- [ ] Quorum-based reads/writes
+#### Phase 4 (Complete - 100%)
+- [x] Successor-list replication (N=3)
+- [x] Replica synchronization with automatic repair
+- [x] Quorum-based reads/writes (W=2, R=2)
+- [x] Support for both quorum and eventual consistency modes
 
-#### Phase 5
+#### Phase 5 (Next)
+- [ ] Conflict resolution (last-write-wins)
+- [ ] Anti-entropy protocol
 - [ ] OTP supervision tree
 - [ ] Configuration management
 - [ ] Monitoring and metrics
 - [ ] Performance optimizations
-- [ ] Conflict resolution (last-write-wins)
-- [ ] Anti-entropy protocol
 
 #### Phase 6
 - [ ] Enhanced CLI tools
