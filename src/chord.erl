@@ -639,6 +639,11 @@ handle_notify_internal(Node, #chord_state{self = Self, predecessor = Pred, succe
     State3 = case Succ#node_info.id =:= Self#node_info.id andalso Node#node_info.id =/= Self#node_info.id of
         true ->
             %% In a single-node ring that gets a notify, the new node should become our successor
+            %% Also notify the new successor that we are its predecessor
+            spawn(fun() -> 
+                timer:sleep(100),  % Small delay to avoid race condition
+                notify_rpc(Node, Self) 
+            end),
             State2#chord_state{successor = Node};
         false ->
             State2
