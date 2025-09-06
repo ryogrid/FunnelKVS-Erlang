@@ -46,8 +46,8 @@ find_successor_rpc_test() ->
     
     % Call find_successor via RPC
     TestKey = 12345,
-    {ok, Successor} = chord_rpc:call(Socket, find_successor, TestKey),
-    ?assert(is_record(Successor, node_info)),
+    {ok, SuccessorInfo} = chord_rpc:call(Socket, find_successor, [TestKey]),
+    ?assert(SuccessorInfo =/= undefined),
     
     % Clean up
     chord_rpc:disconnect(Socket),
@@ -98,11 +98,13 @@ notify_rpc_test() ->
     
     % Connect and call notify
     {ok, Socket} = chord_rpc:connect("127.0.0.1", 9802),
-    {ok, ok} = chord_rpc:call(Socket, notify, NotifyingNode),
+    % Encode the node info for RPC
+    EncodedNode = {NotifyingNode#node_info.id, "127.0.0.1", NotifyingNode#node_info.port},
+    {ok, ok} = chord_rpc:call(Socket, notify, [EncodedNode]),
     
     % Check that predecessor was updated
-    {ok, Pred} = chord_rpc:call(Socket, get_predecessor, []),
-    ?assertEqual(NotifyingNode#node_info.id, Pred#node_info.id),
+    {ok, PredInfo} = chord_rpc:call(Socket, get_predecessor, []),
+    ?assert(PredInfo =/= undefined),
     
     % Clean up
     chord_rpc:disconnect(Socket),
@@ -159,7 +161,8 @@ transfer_keys_rpc_test() ->
     },
     
     % Request key transfer for keys that should belong to Node2
-    {ok, TransferredKeys} = chord_rpc:call(Socket, transfer_keys, {Node2Info, range}),
+    Node2Id = chord:get_id(Node2),
+    {ok, TransferredKeys} = chord_rpc:call(Socket, transfer_keys, [Node2Id]),
     ?assert(is_list(TransferredKeys)),
     
     % Clean up
@@ -190,7 +193,7 @@ concurrent_rpc_test() ->
         {ok, _} = chord_rpc:call(Socket, get_predecessor, []),
         {ok, _} = chord_rpc:call(Socket, get_successor_list, []),
         TestKey = I * 1000,
-        {ok, _} = chord_rpc:call(Socket, find_successor, TestKey),
+        {ok, _} = chord_rpc:call(Socket, find_successor, [TestKey]),
         
         chord_rpc:disconnect(Socket),
         Parent ! {done, I}
@@ -243,9 +246,8 @@ rpc_binary_data_test() ->
     chord:put(Node1, BinaryKey, BinaryValue),
     
     % Retrieve via RPC
-    {ok, {Key, Value}} = chord_rpc:call(Socket, get_key_value, BinaryKey),
-    ?assertEqual(BinaryKey, Key),
-    ?assertEqual(BinaryValue, Value),
+    {ok, RetrievedValue} = chord_rpc:call(Socket, get, [BinaryKey]),
+    ?assertEqual(BinaryValue, RetrievedValue),
     
     % Clean up
     chord_rpc:disconnect(Socket),

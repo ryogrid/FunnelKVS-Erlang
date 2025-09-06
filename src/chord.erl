@@ -236,43 +236,43 @@ handle_call({find_successor, Key}, _From, State) ->
     Successor = find_successor_internal(KeyHash, State),
     {reply, Successor, State};
 
-handle_call({put, Key, Value}, _From, #chord_state{kvs_store = Store} = State) ->
+handle_call({put, Key, Value}, _From, #chord_state{kvs_store = Store, self = Self} = State) ->
     KeyHash = hash_key(Key),
     ResponsibleNode = find_successor_internal(KeyHash, State),
     
-    Result = case ResponsibleNode#node_info.pid of
-        Pid when Pid =:= self() ->
+    Result = case ResponsibleNode#node_info.id =:= Self#node_info.id of
+        true ->
             % We are responsible for this key
             kvs_store:put(Store, Key, Value);
-        _ ->
+        false ->
             % Forward to responsible node
             forward_to_remote_node(ResponsibleNode, {put, Key, Value})
     end,
     {reply, Result, State};
 
-handle_call({get, Key}, _From, #chord_state{kvs_store = Store} = State) ->
+handle_call({get, Key}, _From, #chord_state{kvs_store = Store, self = Self} = State) ->
     KeyHash = hash_key(Key),
     ResponsibleNode = find_successor_internal(KeyHash, State),
     
-    Result = case ResponsibleNode#node_info.pid of
-        Pid when Pid =:= self() ->
+    Result = case ResponsibleNode#node_info.id =:= Self#node_info.id of
+        true ->
             % We are responsible for this key
             kvs_store:get(Store, Key);
-        _ ->
+        false ->
             % Forward to responsible node
             forward_to_remote_node(ResponsibleNode, {get, Key})
     end,
     {reply, Result, State};
 
-handle_call({delete, Key}, _From, #chord_state{kvs_store = Store} = State) ->
+handle_call({delete, Key}, _From, #chord_state{kvs_store = Store, self = Self} = State) ->
     KeyHash = hash_key(Key),
     ResponsibleNode = find_successor_internal(KeyHash, State),
     
-    Result = case ResponsibleNode#node_info.pid of
-        Pid when Pid =:= self() ->
+    Result = case ResponsibleNode#node_info.id =:= Self#node_info.id of
+        true ->
             % We are responsible for this key
             kvs_store:delete(Store, Key);
-        _ ->
+        false ->
             % Forward to responsible node
             forward_to_remote_node(ResponsibleNode, {delete, Key})
     end,
@@ -320,6 +320,13 @@ handle_call({rpc_request, Method, Args}, _From, State) ->
 handle_call({notify, Node}, _From, State) ->
     NewState = handle_notify_internal(Node, State),
     {reply, ok, NewState};
+
+handle_call(get_state, _From, State) ->
+    {reply, {ok, State}, State};
+
+handle_call({put_local, Key, Value}, _From, #chord_state{kvs_store = Store} = State) ->
+    Result = kvs_store:put(Store, Key, Value),
+    {reply, Result, State};
 
 handle_call(create_ring, _From, #chord_state{self = Self} = State) ->
     %% Initialize as single node ring
@@ -602,6 +609,7 @@ check_predecessor(#chord_state{predecessor = Pred} = State) ->
 find_successor_internal(Key, #chord_state{
     self = Self,
     successor = Successor,
+    predecessor = Pred,
     finger_table = FingerTable
 } = _State) ->
     % In single-node ring, we handle all keys
@@ -609,21 +617,37 @@ find_successor_internal(Key, #chord_state{
         true ->
             Self;  % Return self as successor in single-node ring
         false ->
-            case key_belongs_to(Key, Self#node_info.id, Successor#node_info.id) of
+            % Check if we are responsible for this key
+            % A node is responsible for a key if the key falls between its predecessor and itself
+            AmIResponsible = case Pred of
+                undefined -> 
+                    % If no predecessor, check against successor
+                    key_belongs_to(Key, Self#node_info.id, Successor#node_info.id);
+                _ ->
+                    key_belongs_to(Key, Pred#node_info.id, Self#node_info.id)
+            end,
+            
+            case AmIResponsible of
                 true ->
-                    Successor;
+                    Self;  % We are responsible
                 false ->
-                    % Find closest preceding node
-                    ClosestNode = closest_preceding_node(Self#node_info.id, Key, FingerTable),
-                    case ClosestNode#node_info.id =:= Self#node_info.id of
+                    % Check if successor is responsible
+                    case key_belongs_to(Key, Self#node_info.id, Successor#node_info.id) of
                         true ->
-                            % We are the closest, return our successor
                             Successor;
                         false ->
-                            % RPC to find successor on remote node
-                            case find_successor_on_remote_node(ClosestNode, Key) of
-                                {ok, RemoteSuccessor} -> RemoteSuccessor;
-                                _ -> Successor
+                            % Find closest preceding node
+                            ClosestNode = closest_preceding_node(Self#node_info.id, Key, FingerTable),
+                            case ClosestNode#node_info.id =:= Self#node_info.id of
+                                true ->
+                                    % We are the closest, return our successor
+                                    Successor;
+                                false ->
+                                    % RPC to find successor on remote node
+                                    case find_successor_on_remote_node(ClosestNode, Key) of
+                                        {ok, RemoteSuccessor} -> RemoteSuccessor;
+                                        _ -> Successor
+                                    end
                             end
                     end
             end
@@ -764,35 +788,38 @@ handle_rpc_request(get_predecessor, [], #chord_state{predecessor = Pred}) ->
     end;
 handle_rpc_request(get_successor, [], #chord_state{successor = Succ}) ->
     {ok, encode_node_info(Succ)};
+handle_rpc_request(get_successor_list, [], #chord_state{successor_list = SuccList}) ->
+    EncodedList = [encode_node_info(Node) || Node <- SuccList],
+    {ok, EncodedList};
 handle_rpc_request(notify, [NodeInfo], State) ->
     Node = decode_node_info(NodeInfo),
     NewState = handle_notify_internal(Node, State),
     {ok, ok, NewState};
-handle_rpc_request(put, [Key, Value], #chord_state{kvs_store = Store} = State) ->
+handle_rpc_request(put, [Key, Value], #chord_state{kvs_store = Store, self = Self} = State) ->
     KeyHash = hash_key(Key),
     ResponsibleNode = find_successor_internal(KeyHash, State),
-    case ResponsibleNode#node_info.pid of
-        Pid when Pid =:= self() ->
+    case ResponsibleNode#node_info.id =:= Self#node_info.id of
+        true ->
             kvs_store:put(Store, Key, Value);
-        _ ->
+        false ->
             forward_to_remote_node(ResponsibleNode, {put, Key, Value})
     end;
-handle_rpc_request(get, [Key], #chord_state{kvs_store = Store} = State) ->
+handle_rpc_request(get, [Key], #chord_state{kvs_store = Store, self = Self} = State) ->
     KeyHash = hash_key(Key),
     ResponsibleNode = find_successor_internal(KeyHash, State),
-    case ResponsibleNode#node_info.pid of
-        Pid when Pid =:= self() ->
+    case ResponsibleNode#node_info.id =:= Self#node_info.id of
+        true ->
             kvs_store:get(Store, Key);
-        _ ->
+        false ->
             forward_to_remote_node(ResponsibleNode, {get, Key})
     end;
-handle_rpc_request(delete, [Key], #chord_state{kvs_store = Store} = State) ->
+handle_rpc_request(delete, [Key], #chord_state{kvs_store = Store, self = Self} = State) ->
     KeyHash = hash_key(Key),
     ResponsibleNode = find_successor_internal(KeyHash, State),
-    case ResponsibleNode#node_info.pid of
-        Pid when Pid =:= self() ->
+    case ResponsibleNode#node_info.id =:= Self#node_info.id of
+        true ->
             kvs_store:delete(Store, Key);
-        _ ->
+        false ->
             forward_to_remote_node(ResponsibleNode, {delete, Key})
     end;
 handle_rpc_request(transfer_keys, [NodeId], #chord_state{kvs_store = Store, self = Self}) ->
@@ -803,6 +830,8 @@ handle_rpc_request(transfer_keys, [NodeId], #chord_state{kvs_store = Store, self
     end, AllKeys),
     KeyValuePairs = lists:map(fun(Key) ->
         {ok, Value} = kvs_store:get(Store, Key),
+        % Delete the key from our store since we're transferring it
+        kvs_store:delete(Store, Key),
         {Key, Value}
     end, TransferredKeys),
     {ok, KeyValuePairs};
