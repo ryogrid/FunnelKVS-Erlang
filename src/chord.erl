@@ -11,6 +11,7 @@
 -export([get_id/1, get_successor/1, get_predecessor/1, get_finger_table/1, get_successor_list/1]).
 -export([put/3, get/2, delete/2]).
 -export([closest_preceding_node/3]).
+-export([notify/2, transfer_keys/3]).
 
 %% gen_server callbacks
 -export([init/1, handle_call/3, handle_cast/2, handle_info/2, terminate/2, code_change/3]).
@@ -126,6 +127,12 @@ closest_preceding_node(NodeId, Key, FingerTable) ->
             % Return self if no better node found
             #node_info{id = NodeId}
     end.
+
+notify(Pid, Node) ->
+    gen_server:call(Pid, {notify, Node}).
+
+transfer_keys(Pid, TargetNode, Range) ->
+    gen_server:call(Pid, {transfer_keys, TargetNode, Range}).
 
 %%%===================================================================
 %%% gen_server callbacks
@@ -245,6 +252,37 @@ handle_call({get_predecessor_rpc}, _From, #chord_state{predecessor = Pred} = Sta
 handle_call({notify_rpc, Node}, _From, State) ->
     NewState = handle_notify_internal(Node, State),
     {reply, ok, NewState};
+
+handle_call({notify, Node}, _From, State) ->
+    NewState = handle_notify_internal(Node, State),
+    {reply, ok, NewState};
+
+handle_call({transfer_keys, TargetNode, Range}, _From, #chord_state{kvs_store = Store} = State) ->
+    % Get all keys from local store
+    {ok, AllKeys} = kvs_store:list_keys(Store),
+    
+    % Filter keys that should be transferred
+    TransferredKeys = case Range of
+        {StartId, EndId} ->
+            lists:filter(fun(Key) ->
+                KeyHash = hash_key(Key),
+                key_belongs_to(KeyHash, StartId, EndId)
+            end, AllKeys);
+        range ->
+            % Transfer keys that should belong to TargetNode
+            lists:filter(fun(Key) ->
+                KeyHash = hash_key(Key),
+                should_transfer_key(KeyHash, State#chord_state.self#node_info.id, TargetNode#node_info.id)
+            end, AllKeys)
+    end,
+    
+    % Build list of key-value pairs to transfer
+    KeyValuePairs = lists:map(fun(Key) ->
+        {ok, Value} = kvs_store:get(Store, Key),
+        {Key, Value}
+    end, TransferredKeys),
+    
+    {reply, KeyValuePairs, State};
 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
@@ -470,6 +508,13 @@ distance(From, To) ->
         true -> To - From;
         false -> MaxNodes - From + To
     end.
+
+should_transfer_key(KeyHash, OurId, TargetId) ->
+    % Key should be transferred if TargetId is closer to the key than we are
+    % This is used during node join to transfer keys to the new node
+    DistanceToUs = distance(KeyHash, OurId),
+    DistanceToTarget = distance(KeyHash, TargetId),
+    DistanceToTarget < DistanceToUs.
 
 %% RPC handlers
 handle_find_successor(Key, State) ->
