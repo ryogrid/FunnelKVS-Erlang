@@ -436,16 +436,31 @@ handle_call({transfer_keys, TargetNode, Range}, _From, #chord_state{kvs_store = 
 handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
+handle_cast({update_successor, NewSucc}, State) ->
+    {noreply, State#chord_state{successor = NewSucc}};
+
+handle_cast({update_predecessor, NewPred}, State) ->
+    {noreply, State#chord_state{predecessor = NewPred}};
+
 handle_cast(_Msg, State) ->
     {noreply, State}.
 
 handle_info(stabilize, State) ->
-    NewState = stabilize(State),
-    {noreply, NewState};
+    %% Schedule next stabilization
+    erlang:send_after(?STABILIZE_INTERVAL, self(), stabilize),
+    %% Run stabilization in a separate process to avoid blocking
+    Self = self(),
+    spawn(fun() -> do_stabilize_async(Self, State) end),
+    {noreply, State};
 
 handle_info(fix_fingers, State) ->
     NewState = fix_fingers(State),
     {noreply, NewState};
+
+handle_info({notify_new_successor, Node}, #chord_state{self = Self} = State) ->
+    %% Send reciprocal notify to establish bidirectional link in two-node ring
+    notify_rpc(Node, Self),
+    {noreply, State};
 
 handle_info(check_predecessor, State) ->
     NewState = check_predecessor(State),
@@ -506,38 +521,32 @@ join_ring_internal(State, JoinIP, JoinPort) ->
     % TODO: Implement proper RPC to find successor
     State#chord_state{successor = JoinNode}.
 
-stabilize(#chord_state{self = Self, successor = Successor, predecessor = Pred} = State) ->
-    % Reschedule timer
-    erlang:send_after(?STABILIZE_INTERVAL, self(), stabilize),
-    
+do_stabilize_async(NodePid, #chord_state{self = Self, successor = Successor, predecessor = Pred}) ->
     % Special case: if we have no predecessor and successor is self,
     % check if there's a new node between us
     case Successor#node_info.id =:= Self#node_info.id andalso Pred =/= undefined of
         true ->
             % Someone joined, make them our successor
-            State#chord_state{successor = Pred};
+            gen_server:cast(NodePid, {update_successor, Pred});
         false when Successor#node_info.id =:= Self#node_info.id ->
-            State;  % Still alone in the ring
+            ok;  % Still alone in the ring
         false ->
             % Check if successor's predecessor is between us and successor
             case get_predecessor_rpc(Successor) of
-                {ok, Pred} when Pred =/= undefined ->
-                    case between(Pred#node_info.id, Self#node_info.id, Successor#node_info.id) of
+                {ok, SuccPred} when SuccPred =/= undefined ->
+                    case between(SuccPred#node_info.id, Self#node_info.id, Successor#node_info.id) of
                         true ->
                             % Update our successor
-                            State2 = State#chord_state{successor = Pred},
+                            gen_server:cast(NodePid, {update_successor, SuccPred}),
                             % Notify the new successor
-                            notify_rpc(Pred, Self),
-                            State2;
+                            notify_rpc(SuccPred, Self);
                         false ->
                             % Notify our successor
-                            notify_rpc(Successor, Self),
-                            State
+                            notify_rpc(Successor, Self)
                     end;
                 _ ->
                     % Notify our successor anyway
-                    notify_rpc(Successor, Self),
-                    State
+                    notify_rpc(Successor, Self)
             end
     end.
 
@@ -639,11 +648,8 @@ handle_notify_internal(Node, #chord_state{self = Self, predecessor = Pred, succe
     State3 = case Succ#node_info.id =:= Self#node_info.id andalso Node#node_info.id =/= Self#node_info.id of
         true ->
             %% In a single-node ring that gets a notify, the new node should become our successor
-            %% Also notify the new successor that we are its predecessor
-            spawn(fun() -> 
-                timer:sleep(100),  % Small delay to avoid race condition
-                notify_rpc(Node, Self) 
-            end),
+            %% Schedule a reciprocal notify after a short delay
+            erlang:send_after(100, self(), {notify_new_successor, Node}),
             State2#chord_state{successor = Node};
         false ->
             State2
