@@ -46,7 +46,10 @@ FunnelKVS is a scalable, fault-tolerant distributed key-value storage system bui
 - ✅ **Replica synchronization** with periodic sync and repair
 - ✅ **Quorum-based operations** supporting both quorum and eventual consistency
 
-### Planned (Phase 5)
+### In Progress (Phase 5)
+- 🚧 Replica redistribution on node join
+- 🚧 Replica recovery on node failure  
+- 🚧 Key cleanup when responsibility changes
 - 📋 Conflict resolution (last-write-wins)
 - 📋 Anti-entropy protocol
 - 📋 OTP supervision trees
@@ -267,6 +270,11 @@ Current single-node performance (Phase 1):
 
 ## Development Status
 
+### Known Issues
+- **Replica Management**: Replica redistribution during node join/leave events needs improvement
+- **Failure Recovery**: Automatic replica recovery after node failures not fully implemented
+- **Key Cleanup**: Old keys and replicas not properly cleaned up when responsibility changes
+
 ### Recent Improvements (Phase 4 Complete!)
 - **Phase 3 Achievements**:
   - Fixed routing loops in multi-node rings
@@ -285,7 +293,7 @@ Current single-node performance (Phase 1):
 - ✅ **Phase 2**: Chord DHT foundation (100% complete)
 - ✅ **Phase 3**: Node join/leave protocols (100% complete)
 - ✅ **Phase 4**: Replication & consistency (100% complete)
-- 📋 **Phase 5**: Production features (planned)
+- 🚧 **Phase 5**: Production features (in progress - fixing replica management)
 - 📋 **Phase 6**: Client tools & documentation (planned)
 
 ### Roadmap
@@ -312,7 +320,12 @@ Current single-node performance (Phase 1):
 - [x] Quorum-based reads/writes (W=2, R=2)
 - [x] Support for both quorum and eventual consistency modes
 
-#### Phase 5 (Next)
+#### Phase 5 (In Progress)
+- [x] Basic replication (N=3)
+- [x] Quorum operations
+- [ ] Replica redistribution on node join (in progress)
+- [ ] Replica recovery on node failure (in progress)
+- [ ] Key cleanup when responsibility changes (in progress)
 - [ ] Conflict resolution (last-write-wins)
 - [ ] Anti-entropy protocol
 - [ ] OTP supervision tree
