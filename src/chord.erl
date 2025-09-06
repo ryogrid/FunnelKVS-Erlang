@@ -444,7 +444,9 @@ handle_call(_Request, _From, State) ->
     {reply, {error, unknown_request}, State}.
 
 handle_cast({update_successor, NewSucc}, State) ->
-    {noreply, State#chord_state{successor = NewSucc}};
+    % Update successor list when successor changes
+    NewState = update_successor_list(NewSucc, State),
+    {noreply, NewState#chord_state{successor = NewSucc}};
 
 handle_cast({update_predecessor, NewPred}, State) ->
     {noreply, State#chord_state{predecessor = NewPred}};
@@ -528,7 +530,7 @@ join_ring_internal(State, JoinIP, JoinPort) ->
     % TODO: Implement proper RPC to find successor
     State#chord_state{successor = JoinNode}.
 
-do_stabilize_async(NodePid, #chord_state{self = Self, successor = Successor, predecessor = Pred}) ->
+do_stabilize_async(NodePid, #chord_state{self = Self, successor = Successor, predecessor = Pred, successor_list = SuccList}) ->
     % Special case: if we have no predecessor and successor is self,
     % check if there's a new node between us
     case Successor#node_info.id =:= Self#node_info.id andalso Pred =/= undefined of
@@ -538,22 +540,36 @@ do_stabilize_async(NodePid, #chord_state{self = Self, successor = Successor, pre
         false when Successor#node_info.id =:= Self#node_info.id ->
             ok;  % Still alone in the ring
         false ->
-            % Check if successor's predecessor is between us and successor
-            case get_predecessor_rpc(Successor) of
-                {ok, SuccPred} when SuccPred =/= undefined ->
-                    case between(SuccPred#node_info.id, Self#node_info.id, Successor#node_info.id) of
-                        true ->
-                            % Update our successor
-                            gen_server:cast(NodePid, {update_successor, SuccPred}),
-                            % Notify the new successor
-                            notify_rpc(SuccPred, Self);
-                        false ->
-                            % Notify our successor
+            % First check if successor is alive
+            case is_alive(Successor) of
+                false ->
+                    % Successor has failed, use next in successor list or predecessor
+                    NewSucc = case SuccList of
+                        [First | _] -> First;
+                        [] -> case Pred of
+                            undefined -> Self;
+                            _ -> Pred
+                        end
+                    end,
+                    gen_server:cast(NodePid, {update_successor, NewSucc});
+                true ->
+                    % Check if successor's predecessor is between us and successor
+                    case get_predecessor_rpc(Successor) of
+                        {ok, SuccPred} when SuccPred =/= undefined ->
+                            case between(SuccPred#node_info.id, Self#node_info.id, Successor#node_info.id) of
+                                true ->
+                                    % Update our successor
+                                    gen_server:cast(NodePid, {update_successor, SuccPred}),
+                                    % Notify the new successor
+                                    notify_rpc(SuccPred, Self);
+                                false ->
+                                    % Notify our successor
+                                    notify_rpc(Successor, Self)
+                            end;
+                        _ ->
+                            % Notify our successor anyway
                             notify_rpc(Successor, Self)
-                    end;
-                _ ->
-                    % Notify our successor anyway
-                    notify_rpc(Successor, Self)
+                    end
             end
     end.
 
@@ -570,12 +586,9 @@ fix_fingers(#chord_state{
     
     % Update finger table
     UpdatedFinger = Finger#finger_entry{node = SuccessorNode},
-    UpdatedFingerTable = lists:keyreplace(
-        NextFinger, 
-        #finger_entry.start,
-        FingerTable,
-        UpdatedFinger
-    ),
+    % Replace the finger at position NextFinger
+    {Before, [_ | After]} = lists:split(NextFinger - 1, FingerTable),
+    UpdatedFingerTable = Before ++ [UpdatedFinger | After],
     
     % Move to next finger
     NextFinger2 = case NextFinger >= ?FINGER_TABLE_SIZE of
@@ -604,6 +617,40 @@ check_predecessor(#chord_state{predecessor = Pred} = State) ->
                     % Predecessor has failed
                     State#chord_state{predecessor = undefined}
             end
+    end.
+
+update_successor_list(NewSucc, #chord_state{self = Self, successor_list = OldList} = State) ->
+    % Build successor list by asking successor for its successor
+    case NewSucc#node_info.id =:= Self#node_info.id of
+        true ->
+            % Single node ring
+            State#chord_state{successor_list = []};
+        false ->
+            % Try to get successor's successor
+            case get_successor_rpc(NewSucc) of
+                {ok, SuccSucc} when SuccSucc#node_info.id =/= Self#node_info.id ->
+                    % Build list with up to 3 successors
+                    NewList = build_successor_list([NewSucc, SuccSucc], 3),
+                    State#chord_state{successor_list = NewList};
+                _ ->
+                    % Just use the new successor
+                    State#chord_state{successor_list = [NewSucc]}
+            end
+    end.
+
+build_successor_list(Nodes, MaxSize) ->
+    lists:sublist(lists:filter(fun(N) -> N =/= undefined end, Nodes), MaxSize).
+
+get_successor_rpc(#node_info{ip = IP, port = Port}) ->
+    case chord_rpc:connect(inet:ntoa(IP), Port) of
+        {ok, Socket} ->
+            Result = chord_rpc:call(Socket, get_successor, []),
+            chord_rpc:close(Socket),
+            case Result of
+                {ok, SuccInfo} -> {ok, decode_node_info(SuccInfo)};
+                Error -> Error
+            end;
+        Error -> Error
     end.
 
 find_successor_internal(Key, #chord_state{
