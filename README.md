@@ -22,20 +22,20 @@ FunnelKVS is a scalable, fault-tolerant distributed key-value storage system bui
   - Stabilization routines
   - Single-node ring operations
 
-### Implemented (Phase 3 - In Progress)
+### Implemented (Phase 3 - 85% Complete)
 - ✅ **RPC framework** for multi-node communication
 - ✅ **TCP-based RPC** with binary protocol handshake
 - ✅ **Remote procedure calls**: find_successor, notify, transfer_keys, get_predecessor
 - ✅ **Concurrent RPC connections** support
 - ✅ **Multi-node test framework** with comprehensive test coverage
-- ✅ **Stabilization mechanism** with periodic maintenance timers
-- ✅ **Basic join_ring implementation** with successor finding
-- ✅ **Notify protocol** for predecessor/successor updates
-- 🚧 Node join protocol completion (notification chain needs fixing)
-- 🚧 Key migration on join (transfer logic implemented, testing needed)
-- 🚧 Dynamic ring membership (partial - two-node rings need work)
-- 🚧 Graceful departure (leave_ring partial implementation)
-- 🚧 Failure detection (framework exists, detection logic pending)
+- ✅ **Asynchronous stabilization** preventing deadlocks
+- ✅ **Two-node ring formation** with bidirectional links
+- ✅ **Join protocol** with reciprocal notifications
+- ✅ **Notify mechanism** for ring topology updates
+- 🚧 Multi-node rings (3+ nodes) - structure in place, testing needed
+- 🚧 Key migration - implementation exists, validation required
+- 🚧 Graceful departure - partial implementation
+- 🚧 Failure detection - framework exists, logic pending
 
 ### Planned (Phase 4-6)
 - 📋 Replication (N=3 successor list)
@@ -99,6 +99,25 @@ make check
 ```bash
 # Start a node on port 8001
 make run-node NODE_ID=1 PORT=8001
+```
+
+### Multi-Node Ring Setup (Phase 3)
+
+```erlang
+% Start first node and create ring
+{ok, Node1} = chord:start_node(1, 9001).
+ok = chord:create_ring(Node1).
+
+% Start second node and join the ring
+{ok, Node2} = chord:start_node(2, 9002).
+ok = chord:join_ring(Node2, "localhost", 9001).
+
+% The two-node ring will automatically stabilize
+% Both nodes will have bidirectional links after ~1-2 seconds
+
+% Store and retrieve data
+ok = chord:put(Node1, <<"key1">>, <<"value1">>).
+{ok, <<"value1">>} = chord:get(Node2, <<"key1">>).
 ```
 
 ### Using the CLI Client
@@ -203,12 +222,16 @@ erl -pa ebin -noshell -s demo_phase3 run -s init stop
 ```
 
 ### Test Coverage
-- **94+ unit tests** across all modules
-- **Integration tests** for end-to-end workflows
+- **95+ unit tests** across all modules
+- **Integration tests** for end-to-end workflows  
 - **Protocol tests** for binary encoding/decoding
 - **Chord tests** for DHT operations
 - **RPC tests** for multi-node communication
-- **Multi-node tests** for distributed scenarios (10 test scenarios)
+- **Multi-node tests** for distributed scenarios
+  - ✅ Two-node ring formation (passing)
+  - ⚠️ Multi-node stabilization (in progress)
+  - ⚠️ Key migration (needs fixes)
+  - ⚠️ Graceful departure (partially implemented)
 
 ## Performance
 
@@ -218,6 +241,13 @@ Current single-node performance (Phase 1):
 - **Concurrent clients**: Successfully tested with 100+ concurrent connections
 
 ## Development Status
+
+### Recent Improvements (Phase 3)
+- **Fixed**: Two-node ring formation from single-node state
+- **Fixed**: Deadlock in stabilization using async processing
+- **Added**: Reciprocal notifications for ring topology updates
+- **Improved**: RPC state management and error handling
+- **Achievement**: First multinode test passing consistently
 
 ### Phase Completion
 - ✅ **Phase 1**: Basic KVS with TCP server/client (100% complete)
@@ -229,19 +259,19 @@ Current single-node performance (Phase 1):
 
 ### Roadmap
 
-#### Phase 3 (Current - 75% Complete)
+#### Phase 3 (Current - 85% Complete)
 - [x] RPC framework for node communication
 - [x] TCP-based RPC with handshake protocol
 - [x] Remote procedure calls implementation
-- [x] Key transfer preparation logic
 - [x] Multi-node test framework
-- [x] Stabilization mechanism with maintenance timers
-- [x] Basic join_ring and notify protocols
-- [ ] Complete two-node ring formation (debugging successor updates)
-- [ ] Multi-node ring stabilization (needs testing)
-- [ ] Key migration on join (implementation exists, needs testing)
-- [ ] Graceful node departure (partial implementation)
-- [ ] Failure detection (framework exists, logic pending)
+- [x] Asynchronous stabilization (prevents deadlocks)
+- [x] Two-node ring formation (fully working)
+- [x] Join protocol with reciprocal notifications
+- [x] First multinode test passing (test_node_join)
+- [ ] Multi-node rings (3+ nodes) - needs testing
+- [ ] Key migration validation
+- [ ] Graceful node departure completion
+- [ ] Failure detection implementation
 
 #### Phase 4
 - [ ] Successor list replication (N=3)
@@ -306,6 +336,24 @@ This project follows **Test-First Development (TDD)**:
 3. Refactor while keeping tests green
 4. Maintain high test coverage
 
+## Troubleshooting
+
+### Common Issues
+
+**Port Already in Use**
+- Ensure no other nodes are running on the same port
+- Tests use ports 9xxx to avoid conflicts with production ports
+
+**Node Join Timeout**
+- Wait 1-2 seconds after join for stabilization
+- Check network connectivity between nodes
+- Verify the bootstrap node is running and accessible
+
+**Test Failures**
+- Some multi-node tests are still in development
+- Run individual test modules: `make test-module MODULE=chord_multinode_tests`
+- Check PHASE3_STATUS.md for known issues
+
 ## Contributing
 
 Contributions are welcome! Please follow these steps:
@@ -336,7 +384,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## Status
 
-![Tests](https://img.shields.io/badge/tests-94%20passing-brightgreen)
-![Phase](https://img.shields.io/badge/phase-3%20(85%25)-orange)
+![Tests](https://img.shields.io/badge/tests-95%2B%20passing-brightgreen)
+![Phase](https://img.shields.io/badge/phase-3%20(85%25)-yellow)
 ![Erlang](https://img.shields.io/badge/erlang-%E2%89%A524-red)
 ![License](https://img.shields.io/badge/license-MIT-blue)
