@@ -245,11 +245,6 @@ make test-module MODULE=kvs_store_tests
 
 # Run integration tests
 erl -pa ebin -noshell -eval 'eunit:test(integration_tests, [verbose])' -s init stop
-
-# Run demos
-erl -pa ebin -noshell -s demo run -s init stop
-erl -pa ebin -noshell -s demo_phase2 run -s init stop
-erl -pa ebin -noshell -s demo_phase3 run -s init stop
 ```
 
 ### Test Coverage
@@ -378,7 +373,6 @@ erl -pa ebin -noshell -s demo_phase3 run -s init stop
 │   └── chord_multinode_tests.erl # Multi-node tests
 ├── include/            # Header files
 │   └── chord.hrl      # Chord data structures
-├── demo*.erl          # Demo scripts for each phase
 ├── ebin/              # Compiled beam files
 ├── doc/               # Documentation
 └── Makefile           # Build configuration
