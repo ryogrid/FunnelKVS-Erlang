@@ -4,7 +4,7 @@
 -include("../include/chord.hrl").
 
 %% API
--export([start_link/1, start_link/2, stop/1]).
+-export([start_link/1, stop/1]).
 -export([start_node/2, stop_node/1, create_ring/1, join_ring/3, leave_ring/1]).
 -export([hash/1, generate_node_id/2]).
 -export([key_belongs_to/3, between/3]).
@@ -29,9 +29,6 @@
 start_link(Port) ->
     gen_server:start_link(?MODULE, [Port, undefined], []).
 
-start_link(Port, {JoinIP, JoinPort}) ->
-    gen_server:start_link(?MODULE, [Port, {JoinIP, JoinPort}], []).
-
 stop(Pid) ->
     gen_server:stop(Pid).
 
@@ -49,7 +46,7 @@ create_ring(Pid) ->
     gen_server:call(Pid, create_ring).
 
 join_ring(Pid, Host, Port) ->
-    gen_server:call(Pid, {join_ring, Host, Port}, 10000).
+    gen_server:call(Pid, {join_ring, Host, Port}, 30000).  % Increased timeout for complex joins
 
 leave_ring(Pid) ->
     gen_server:call(Pid, leave_ring, 10000).
@@ -176,7 +173,7 @@ transfer_keys(Pid, TargetNode, Range) ->
 %%% gen_server callbacks
 %%%===================================================================
 
-init([Port, JoinNode]) ->
+init([Port, _JoinNode]) ->  % JoinNode is deprecated, always pass undefined
     % Start KVS store for this node
     {ok, KvsStore} = kvs_store:start_link(),
     
@@ -215,25 +212,8 @@ init([Port, JoinNode]) ->
     % Start maintenance timers
     State2 = start_maintenance_timers(State),
     
-    % Join existing ring if specified
-    State3 = case JoinNode of
-        undefined ->
-            % Creating new ring, we are our own successor
-            State2;
-        {JoinIP, JoinPort} ->
-            try
-                join_ring_internal(State2, JoinIP, JoinPort)
-            catch
-                error:{join_failed, Reason} ->
-                    % Failed to join, return error
-                    stop_maintenance_timers(State2),
-                    kvs_store:stop(KvsStore),
-                    chord_rpc:stop_server(RpcServer),
-                    error({join_failed, Reason})
-            end
-    end,
-    
-    {ok, State3}.
+    % JoinNode should always be undefined now (join_ring should be used separately)
+    {ok, State2}.
 
 handle_call(get_id, _From, #chord_state{self = Self} = State) ->
     {reply, Self#node_info.id, State};
@@ -317,10 +297,7 @@ handle_call({get, Key, Consistency}, _From, #chord_state{kvs_store = Store, self
             end;
         false ->
             % Forward to responsible node with consistency level
-            case forward_to_remote_node(ResponsibleNode, {get, Key, Consistency}) of
-                {ok, Result0} -> Result0;  % Unwrap RPC response
-                Error -> Error
-            end
+            forward_to_remote_node(ResponsibleNode, {get, Key, Consistency})
     end,
     {reply, Result, State};
 
@@ -634,36 +611,6 @@ stop_maintenance_timers(#chord_state{
 cancel_timer(undefined) -> ok;
 cancel_timer(Timer) -> erlang:cancel_timer(Timer).
 
-join_ring_internal(State, JoinIP, JoinPort) ->
-    % Find our successor through the existing node via RPC
-    case chord_rpc:connect(JoinIP, JoinPort) of
-        {ok, Socket} ->
-            MyId = State#chord_state.self#node_info.id,
-            case chord_rpc:call(Socket, find_successor, [MyId]) of
-                {ok, SuccessorInfo} ->
-                    Successor = decode_node_info(SuccessorInfo),
-                    chord_rpc:close(Socket),
-                    
-                    % Update our state with the found successor
-                    State2 = State#chord_state{
-                        successor = Successor,
-                        predecessor = undefined
-                    },
-                    
-                    % Notify our new successor about us
-                    notify_rpc(Successor, State2#chord_state.self),
-                    
-                    % Request key transfer from successor
-                    transfer_keys_from_successor(State2, Successor),
-                    
-                    State2;
-                Error ->
-                    chord_rpc:close(Socket),
-                    error({join_failed, Error})
-            end;
-        Error ->
-            error({join_failed, Error})
-    end.
 
 do_stabilize_async(NodePid, #chord_state{self = Self, successor = Successor, predecessor = Pred, successor_list = SuccList}) ->
     % Special case: if we have no predecessor and successor is self,

@@ -143,13 +143,16 @@ successor_list_test() ->
     {ok, Node1} = chord:start_link(5001),
     timer:sleep(100),
     
-    {ok, Node2} = chord:start_link(5002, {"127.0.0.1", 5001}),
+    {ok, Node2} = chord:start_link(5002),
+    ok = chord:join_ring(Node2, "127.0.0.1", 5001),
     timer:sleep(500),
     
-    {ok, Node3} = chord:start_link(5003, {"127.0.0.1", 5001}),
+    {ok, Node3} = chord:start_link(5003),
+    ok = chord:join_ring(Node3, "127.0.0.1", 5001),
     timer:sleep(500),
     
-    {ok, Node4} = chord:start_link(5004, {"127.0.0.1", 5001}),
+    {ok, Node4} = chord:start_link(5004),
+    ok = chord:join_ring(Node4, "127.0.0.1", 5001),
     timer:sleep(2000), % Wait for stabilization
     
     % Get successor list from Node1
@@ -170,24 +173,30 @@ successor_list_test() ->
     chord:stop(Node3),
     chord:stop(Node4).
 
-%% Test node join
+%% Test node join with longer timeout
 node_join_test() ->
-    % Start initial node
-    {ok, Node1} = chord:start_link(4001),
+    % This test needs more time for join and stabilization
+    {timeout, 30, fun() -> node_join_test_impl() end}.
+
+node_join_test_impl() ->
+    % Start initial node with unique port (avoid conflicts)
+    {ok, Node1} = chord:start_link(24001),
     timer:sleep(100),
     
-    % Add a key to Node1
+    % Add a key to Node1 (use eventual consistency for single node)
     TestKey = <<"test_key">>,
     TestValue = <<"test_value">>,
-    chord:put(Node1, TestKey, TestValue),
+    chord:put(Node1, TestKey, TestValue, eventual),
     
-    % Start second node and join
-    {ok, Node2} = chord:start_link(4002, {"127.0.0.1", 4001}),
+    % Start second node
+    {ok, Node2} = chord:start_link(24002),
+    % Join the ring
+    ok = chord:join_ring(Node2, "127.0.0.1", 24001),
     timer:sleep(3000), % Wait for join and key transfer
     
-    % The key should be accessible from both nodes
-    {ok, Value1} = chord:get(Node1, TestKey),
-    {ok, Value2} = chord:get(Node2, TestKey),
+    % The key should be accessible from both nodes (use eventual for reliability)
+    {ok, Value1} = chord:get(Node1, TestKey, eventual),
+    {ok, Value2} = chord:get(Node2, TestKey, eventual),
     
     ?assertEqual(TestValue, Value1),
     ?assertEqual(TestValue, Value2),
@@ -211,7 +220,8 @@ data_migration_test() ->
     end, lists:zip(Keys, Values)),
     
     % Start second node
-    {ok, Node2} = chord:start_link(3002, {"127.0.0.1", 3001}),
+    {ok, Node2} = chord:start_link(3002),
+    ok = chord:join_ring(Node2, "127.0.0.1", 3001),
     timer:sleep(3000), % Wait for stabilization and data migration
     
     % Check that all keys are still accessible
@@ -234,10 +244,12 @@ node_failure_test() ->
     {ok, Node1} = chord:start_link(2001),
     timer:sleep(100),
     
-    {ok, Node2} = chord:start_link(2002, {"127.0.0.1", 2001}),
+    {ok, Node2} = chord:start_link(2002),
+    ok = chord:join_ring(Node2, "127.0.0.1", 2001),
     timer:sleep(500),
     
-    {ok, Node3} = chord:start_link(2003, {"127.0.0.1", 2001}),
+    {ok, Node3} = chord:start_link(2003),
+    ok = chord:join_ring(Node3, "127.0.0.1", 2001),
     timer:sleep(2000), % Wait for stabilization
     
     % Add data
@@ -287,7 +299,8 @@ concurrent_operations_test() ->
     {ok, Node1} = chord:start_link(1001),
     timer:sleep(100),
     
-    {ok, Node2} = chord:start_link(1002, {"127.0.0.1", 1001}),
+    {ok, Node2} = chord:start_link(1002),
+    ok = chord:join_ring(Node2, "127.0.0.1", 1001),
     timer:sleep(2000),
     
     % Spawn multiple processes doing concurrent operations

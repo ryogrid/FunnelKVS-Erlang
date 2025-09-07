@@ -6,10 +6,10 @@
 -define(FINGER_TABLE_SIZE, 160).
 -define(SUCCESSOR_LIST_SIZE, 3).
 -define(REPLICATION_FACTOR, 3).  % Number of replicas (N)
--define(STABILIZE_INTERVAL, 1000).  % milliseconds
--define(FIX_FINGERS_INTERVAL, 1000).  % milliseconds
--define(CHECK_PREDECESSOR_INTERVAL, 2000).  % milliseconds
--define(REPLICATE_INTERVAL, 5000).  % milliseconds
+-define(STABILIZE_INTERVAL, 500).  % milliseconds (reduced from 1000)
+-define(FIX_FINGERS_INTERVAL, 500).  % milliseconds (reduced from 1000)
+-define(CHECK_PREDECESSOR_INTERVAL, 1000).  % milliseconds (reduced from 2000)
+-define(REPLICATE_INTERVAL, 2500).  % milliseconds (reduced from 5000)
 
 %% Node information record
 -record(node_info, {

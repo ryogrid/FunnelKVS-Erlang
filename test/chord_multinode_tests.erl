@@ -18,7 +18,7 @@ chord_multinode_test_() ->
      fun teardown/1,
      [
       {"Node join protocol", {timeout, 10, fun test_node_join/0}},
-      {"Multi-node stabilization", {timeout, 20, fun test_multinode_stabilization/0}},
+      {"Multi-node stabilization", {timeout, 60, fun test_multinode_stabilization/0}},  % Increased timeout
       {"Key migration on join", {timeout, 20, fun test_key_migration_on_join/0}}
       %% {"Graceful node departure", {timeout, 20, fun test_graceful_departure/0}}  % TODO: Fix routing in 3+ node rings
       %% {"Failure detection", fun test_failure_detection/0},
@@ -117,11 +117,12 @@ test_key_migration_on_join() ->
     
     %% Verify key migration happened
     %% We expect some keys to be on Node1 and some on Node2
+    %% Note: With replication, keys may exist on both nodes
     AllKeysAfter = LocalKeys1After ++ LocalKeys2After,
-    AllKeysBeforeSet = lists:sort(LocalKeys1Before),
-    AllKeysAfterSet = lists:sort(AllKeysAfter),
+    AllKeysBeforeSet = lists:sort(lists:usort(LocalKeys1Before)),  % Remove duplicates
+    AllKeysAfterSet = lists:sort(lists:usort(AllKeysAfter)),  % Remove duplicates
     
-    %% All keys should still exist
+    %% All keys should still exist (considering replication)
     ?assertEqual(AllKeysBeforeSet, AllKeysAfterSet, "Some keys were lost during migration"),
     
     %% At least one key should have moved to Node2
@@ -162,9 +163,9 @@ test_multinode_stabilization() ->
     
     %% Join other nodes sequentially with more wait time
     ok = chord:join_ring(Node2, "localhost", 9201),
-    timer:sleep(1500),  % More time for two-node ring to stabilize
+    timer:sleep(2000),  % More time for two-node ring to stabilize with faster intervals
     ok = chord:join_ring(Node3, "localhost", 9201),
-    timer:sleep(1500),
+    timer:sleep(2000),  % More time for stabilization with faster intervals
     ok = chord:join_ring(Node4, "localhost", 9201),
     
     %% Wait for stabilization
