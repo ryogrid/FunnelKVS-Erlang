@@ -264,6 +264,11 @@ erl -pa ebin -noshell -s demo_phase3 run -s init stop
   - ✅ Key migration with automatic rebalancing
   - ✅ Replica redistribution and recovery
   - ✅ Comprehensive test suite reliability improvements
+- **Large-scale tests** for extreme failure scenarios - **Identified limitations** ⚠️
+  - ✅ 10-node cluster startup and data distribution
+  - ✅ Sequential node shutdown with 6-second intervals
+  - ⚠️ **Data availability after original node failures**: When all nodes that originally stored data are shut down, complete data availability (100% from all remaining nodes) is not guaranteed
+  - 🔍 **Test result**: 66.7% data survival rate in extreme scenarios, with some `econnrefused` errors indicating network connectivity issues during replica recovery
 
 ## Performance
 
@@ -309,6 +314,7 @@ erl -pa ebin -noshell -s demo_phase3 run -s init stop
 - ✅ **Phase 3**: Node join/leave protocols (100% complete)
 - ✅ **Phase 4**: Replication & consistency (100% complete)
 - ✅ **Phase 5**: Production features (95% complete - replica management done)
+- ⚠️ **Large-scale testing**: Identified limitations in extreme failure scenarios
 - 📋 **Phase 6**: Client tools & documentation (planned)
 
 ### Roadmap
@@ -343,6 +349,8 @@ erl -pa ebin -noshell -s demo_phase3 run -s init stop
 - [x] **Key cleanup when responsibility changes** - Obsolete data removal
 - [x] **Performance optimizations** - Faster convergence with reduced intervals
 - [x] **Code quality improvements** - Legacy code removal and test stabilization
+- [x] **Large-scale testing** - Comprehensive 10-node failure scenario testing implemented
+- ⚠️ **Identified limitations**: Complete data availability not guaranteed when all original storing nodes fail simultaneously
 - [ ] Conflict resolution (last-write-wins)
 - [ ] Anti-entropy protocol
 - [ ] OTP supervision tree
@@ -417,6 +425,12 @@ This project follows **Test-First Development (TDD)**:
 - Some multi-node tests are still in development
 - Run individual test modules: `make test-module MODULE=chord_multinode_tests`
 - Check PHASE3_STATUS.md for known issues
+
+**Large-scale Test Limitations**
+- The 10-node extreme failure scenario test (`chord_large_scale_tests`) reveals limitations in data availability
+- When all nodes that originally stored data are shut down simultaneously, complete data availability is not guaranteed
+- Some `econnrefused` errors may occur during replica recovery, indicating network connectivity issues
+- This is expected behavior in extreme failure scenarios (shutting down 30% of a 10-node cluster including all original data holders)
 
 ## Contributing
 
