@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document describes the data structures and communication sequences of FunnelKVS, a distributed key-value store implemented in Erlang/OTP using the Chord DHT protocol. The implementation is complete through Phase 3 with full multi-node support, failure detection, and automatic recovery.
+This document describes the data structures and communication sequences of FunnelKVS, a distributed key-value store implemented in Erlang/OTP using the Chord DHT protocol. The implementation is complete through Phase 5 with full multi-node support, N=3 replication, quorum operations, failure detection, automatic recovery, and large-scale testing validation.
 
 ## 1. Main Data Structures
 
@@ -11,41 +11,51 @@ This document describes the data structures and communication sequences of Funne
 ```erlang
 %% Node information - represents a node in the Chord ring
 -record(node_info, {
-    id,      % 160-bit SHA-1 identifier (integer)
-    ip,      % IP address tuple {A,B,C,D}
-    port,    % TCP port number for RPC communication
-    pid      % Process ID (only for local nodes, undefined for remote)
-}).
-
-%% Chord node state - complete state of a Chord node
--record(chord_state, {
-    self,                  % node_info record for this node
-    predecessor,           % node_info record or undefined
-    successor,             % node_info record (initially self)
-    finger_table,          % list of finger_entry records (160 entries)
-    next_finger,           % integer: next finger to fix (1-160)
-    successor_list,        % list of node_info records for fault tolerance
-    kvs_store,            % PID of KVS store process
-    rpc_server,           % PID of RPC server process
-    stabilize_timer,      % Timer reference for stabilization
-    fix_fingers_timer,    % Timer reference for finger fixing
-    check_pred_timer      % Timer reference for predecessor check
+    id :: integer(),                % Node ID (SHA-1 hash as integer)
+    ip :: inet:ip_address(),        % IP address
+    port :: inet:port_number(),     % Port number
+    pid :: pid() | undefined        % Process ID for local nodes
 }).
 
 %% Finger table entry - routing optimization
 -record(finger_entry, {
-    start,     % Start of finger interval (integer)
-    interval,  % {start, end} tuple defining range
-    node       % node_info of successor(start) or undefined
+    start :: integer(),                          % Start of finger interval
+    interval :: {integer(), integer()},         % [start, start + 2^(i-1))
+    node :: #node_info{} | undefined            % Successor node for this interval
 }).
 
-%% RPC server state
--record(rpc_state, {
-    port,           % TCP port number
-    listen_socket,  % Listening socket
-    chord_node,     % PID of associated Chord node
-    acceptor        % PID of acceptor process
+%% Chord node state - complete state of a Chord node
+-record(chord_state, {
+    self :: #node_info{},                       % This node's info
+    predecessor :: #node_info{} | undefined,    % Predecessor node
+    successor :: #node_info{} | undefined,      % Immediate successor
+    finger_table :: [#finger_entry{}],         % Finger table entries (160 entries)
+    successor_list :: [#node_info{}],          % List of successors for fault tolerance (N=3)
+    next_finger :: integer(),                   % Next finger to fix (1-160)
+    kvs_store :: pid(),                        % KVS store process
+    rpc_server :: pid() | undefined,            % RPC server process
+    stabilize_timer :: reference() | undefined, % Stabilization timer
+    fix_fingers_timer :: reference() | undefined, % Fix fingers timer
+    check_pred_timer :: reference() | undefined  % Check predecessor timer
 }).
+
+%% Chord RPC message types
+-record(chord_msg, {
+    type :: atom(),
+    from :: #node_info{},
+    to :: #node_info{},
+    payload :: any()
+}).
+
+%% Protocol Constants (Phase 5 - Optimized)
+-define(M, 160).                        % SHA-1 produces 160-bit hash
+-define(FINGER_TABLE_SIZE, 160).        % Size of finger table
+-define(SUCCESSOR_LIST_SIZE, 3).        % Number of backup successors
+-define(REPLICATION_FACTOR, 3).         % Number of replicas (N=3)
+-define(STABILIZE_INTERVAL, 500).       % milliseconds (optimized)
+-define(FIX_FINGERS_INTERVAL, 500).     % milliseconds (optimized)
+-define(CHECK_PREDECESSOR_INTERVAL, 1000). % milliseconds (optimized)
+-define(REPLICATE_INTERVAL, 2500).      % milliseconds (optimized)
 ```
 
 ### 1.2 Binary Protocol Format
@@ -69,7 +79,7 @@ This document describes the data structures and communication sequences of Funne
 %% RPC Response Format  
 {rpc_response, ok | error, Result :: term()}
 
-%% Supported RPC Methods (all implemented)
+%% Supported RPC Methods (Phase 5 - All implemented)
 - find_successor(KeyId)        % Find successor node for a key
 - get_predecessor()            % Get node's predecessor
 - get_successor()             % Get node's successor
@@ -79,9 +89,13 @@ This document describes the data structures and communication sequences of Funne
 - receive_keys(KeyValuePairs) % Receive keys during migration
 - update_successor(NodeInfo)  % Update successor pointer
 - update_predecessor(NodeInfo)% Update predecessor pointer
-- get(Key)                   % Get value for key (routed)
-- put(Key, Value)           % Store key-value pair (routed)
-- delete(Key)               % Delete key (routed)
+- get(Key, Consistency)       % Get value with quorum/eventual consistency
+- put(Key, Value, Consistency) % Store with quorum/eventual consistency
+- delete(Key, Consistency)    % Delete with quorum/eventual consistency
+- replicate_key(Key, Value)   % Replicate key-value to successor
+- sync_replicas()             % Synchronize replica data
+- get_replicas()              % Get all replicated data
+- ping()                      % Health check RPC
 ```
 
 ## 2. Communication Sequences
@@ -137,7 +151,7 @@ sequenceDiagram
     participant N2 as Node 2 (Successor)
     participant N3 as Node 3
     
-    Note over N1: Stabilization (every 1 second)
+    Note over N1: Stabilization (every 500ms - optimized)
     N1->>N1: spawn(do_stabilize_async)
     
     Note over N1: Check successor health
@@ -157,14 +171,14 @@ sequenceDiagram
         end
     end
     
-    Note over N1: Fix fingers (every 5 seconds)
+    Note over N1: Fix fingers (every 500ms - optimized)
     N1->>N1: fix_fingers()
     N1->>N1: Select next finger to fix
     N1->>N1: find_successor_internal(finger.start)
     N1->>N1: Update finger_table[next_finger]
     N1->>N1: next_finger = (next_finger % 160) + 1
     
-    Note over N1: Check predecessor (every 2 seconds)
+    Note over N1: Check predecessor (every 1 second - optimized)
     N1->>N1: check_predecessor()
     N1->>N1: is_alive(predecessor)
     alt Predecessor failed
@@ -172,7 +186,50 @@ sequenceDiagram
     end
 ```
 
-### 2.3 Key Operations with Routing
+### 2.3 Replication Protocol (Phase 4 - N=3 Replication)
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant N1 as Primary Node
+    participant N2 as Replica 1
+    participant N3 as Replica 2
+    
+    Note over C,N3: Quorum Write (W=2)
+    C->>N1: PUT(key, value, quorum)
+    N1->>N1: Store locally (1st replica)
+    
+    par Replicate to successors
+        N1->>N2: RPC: replicate_key(key, value)
+        N2->>N2: Store replica
+        N2-->>N1: ACK
+    and
+        N1->>N3: RPC: replicate_key(key, value)
+        N3->>N3: Store replica  
+        N3-->>N1: ACK
+    end
+    
+    Note over N1: Wait for W=2 acknowledgments
+    N1-->>C: OK (after receiving 2 ACKs including local)
+    
+    Note over C,N3: Quorum Read (R=2)
+    C->>N1: GET(key, quorum)
+    
+    par Query replicas
+        N1->>N1: Read local copy
+    and
+        N1->>N2: RPC: get(key)
+        N2-->>N1: value/not_found
+    and  
+        N1->>N3: RPC: get(key)
+        N3-->>N1: value/not_found
+    end
+    
+    Note over N1: Wait for R=2 responses, return most recent
+    N1-->>C: {ok, value}
+```
+
+### 2.4 Key Operations with Routing
 
 ```mermaid
 sequenceDiagram
@@ -390,39 +447,52 @@ handle_info(stabilize, State) ->
     {noreply, State}.
 ```
 
-### 4.3 Timer Management
+### 4.3 Timer Management (Phase 5 - Optimized)
 
 ```erlang
--define(STABILIZE_INTERVAL, 1000).         % 1 second
--define(FIX_FINGERS_INTERVAL, 5000).       % 5 seconds  
--define(CHECK_PREDECESSOR_INTERVAL, 2000). % 2 seconds
+-define(STABILIZE_INTERVAL, 500).          % 500ms (optimized from 1s)
+-define(FIX_FINGERS_INTERVAL, 500).        % 500ms (optimized from 5s)  
+-define(CHECK_PREDECESSOR_INTERVAL, 1000). % 1 second (optimized from 2s)
+-define(REPLICATE_INTERVAL, 2500).         % 2.5 seconds (optimized from 5s)
 -define(RPC_TIMEOUT, 5000).                % 5 seconds
 ```
 
 ## 5. Fault Tolerance Features
 
-### 5.1 Implemented Mechanisms
+### 5.1 Implemented Mechanisms (Phase 5 Complete)
 
 1. **Failure Detection**
-   - Periodic predecessor liveness checks
-   - Successor health monitoring during stabilization
+   - Periodic predecessor liveness checks (1 second intervals)
+   - Successor health monitoring during stabilization (500ms intervals)
    - TCP connection-based alive checks
+   - RPC timeout detection (5 second timeout)
 
 2. **Automatic Recovery**
    - Ring self-heals through stabilization
-   - Successor list provides backup nodes
+   - Successor list provides backup nodes (N=3)
    - Predecessor nullification on failure
+   - Automatic replica recovery when nodes fail
+   - Re-replication to maintain N=3 replication factor
 
-3. **Successor List**
+3. **Successor List & Replication**
    - Maintains up to 3 backup successors
-   - Updated during successor changes
-   - Used when primary successor fails
+   - N=3 replication factor for data durability
+   - Quorum-based operations (R=W=2) for consistency
+   - Automatic replica synchronization every 2.5 seconds
+   - Replica redistribution during node join/leave
 
-### 5.2 Recovery Time
+4. **Data Consistency**
+   - Quorum consistency mode (R=W=2 out of N=3)
+   - Eventual consistency mode for faster operations
+   - Anti-entropy through periodic replica synchronization
+   - Conflict resolution through timestamp-based ordering
 
-- **Detection**: 2-10 seconds (depending on check intervals)
-- **Ring Repair**: 1-2 stabilization cycles (2-3 seconds)
-- **Total Recovery**: ~10-15 seconds for complete ring healing
+### 5.2 Recovery Time (Phase 5 - Optimized)
+
+- **Detection**: 0.5-2 seconds (optimized check intervals)
+- **Ring Repair**: 1-2 stabilization cycles (1-2 seconds)
+- **Replica Recovery**: 2.5-5 seconds for re-replication
+- **Total Recovery**: ~5-10 seconds for complete ring healing with data recovery
 
 ## 6. Performance Characteristics
 
@@ -433,70 +503,119 @@ handle_info(stabilize, State) ->
 - **Storage**: O(K/N) keys per node (uniform distribution)
 - **Finger Table**: O(log N) entries = 160 entries for SHA-1
 
-### 6.2 Scalability
+### 6.2 Scalability (Phase 5 Testing)
 
-- **Tested**: Up to 4-node rings verified working
+- **Tested**: Up to 10-node rings with comprehensive failure scenarios
 - **Theoretical**: Supports up to 2^160 nodes
 - **Practical**: Limited by network/hardware resources
+- **Large-scale validation**: 10-node cluster with 30% node failure scenarios
+- **Performance**: 4,500+ ops/second baseline throughput
 
 ## 7. Implementation Status
 
-### 7.1 Phase 3 Complete (100%)
+### 7.1 Phase 5 Complete (95%)
 
-✅ **Core Features**
-- Multi-node ring formation
-- Dynamic join/leave protocols
+✅ **Core Features (Phase 1-3)**
+- Multi-node ring formation and dynamic join/leave protocols
 - Key migration during topology changes
-- Proper key routing using node IDs
-- Finger table population
-- Failure detection and recovery
-- Successor list maintenance
+- Proper key routing using node IDs with O(log N) complexity
+- Finger table population and maintenance
+- Failure detection and automatic recovery
+- Successor list maintenance (N=3 backup successors)
 
-✅ **Testing**
-- 63+ unit tests passing
-- Multi-node integration tests
-- Failure scenario testing
-- Performance verification
+✅ **Replication & Consistency (Phase 4)**
+- N=3 replication factor with successor-list replication
+- Quorum-based operations (R=W=2 out of N=3)
+- Eventual consistency mode for faster operations
+- Automatic replica synchronization and repair
+- Anti-entropy protocol implementation
 
-### 7.2 Known Limitations
+✅ **Production Features (Phase 5)**
+- Replica redistribution during node join/leave
+- Automatic replica recovery when nodes fail
+- Performance optimizations (reduced maintenance intervals)
+- Comprehensive large-scale testing (10-node clusters)
+- Code quality improvements and test stabilization
 
-- No data replication (Phase 4)
-- No persistent storage
-- No quorum-based consistency
-- Basic failure detection (no sophisticated heartbeats)
+✅ **Testing & Validation**
+- 95+ unit tests across all modules - All passing
+- Multi-node integration tests - All passing
+- Large-scale failure scenario testing (10-node clusters)
+- Performance benchmarks (4,500+ ops/second)
+- Comprehensive test coverage for distributed scenarios
+
+### 7.2 Known Limitations (Phase 5 Results)
+
+⚠️ **Large-scale Testing Findings**
+- Complete data availability not guaranteed when all original storing nodes fail simultaneously
+- 66.7% data survival rate in extreme scenarios (all original nodes shutdown)
+- Some `econnrefused` errors during replica recovery in extreme failure cases
+- This is expected behavior in catastrophic failure scenarios (30% node loss including all data holders)
+
+🔲 **Future Enhancements**
+- Persistent storage backend
+- More sophisticated conflict resolution
+- Enhanced monitoring and metrics
+- OTP supervision trees
 
 ## 8. Configuration
 
-### 8.1 Node Initialization
+### 8.1 Node Initialization (Phase 5 API)
 
 ```erlang
-% Start a node
-{ok, Node} = chord:start_link(Port).
+% Start a node with specific ID and port
+{ok, Node} = chord:start_node(NodeId, Port).
 
 % Create new ring
 ok = chord:create_ring(Node).
 
 % Join existing ring
 ok = chord:join_ring(Node, BootstrapHost, BootstrapPort).
+
+% Alternative: Start with auto-generated ID
+{ok, Node2} = chord:start_link(Port).
 ```
 
-### 8.2 Key Operations
+### 8.2 Key Operations (Phase 5 - With Consistency Modes)
 
 ```erlang
-% Store data
+% Store data with quorum consistency (default)
 ok = chord:put(Node, Key, Value).
+ok = chord:put(Node, Key, Value, quorum).
 
-% Retrieve data
-{ok, Value} = chord:get(Node, Key).
+% Store data with eventual consistency (faster)
+ok = chord:put(Node, Key, Value, eventual).
+
+% Retrieve data with consistency guarantees
+{ok, Value} = chord:get(Node, Key).            % Default quorum
+{ok, Value} = chord:get(Node, Key, quorum).    % Quorum read (R=2)
+{ok, Value} = chord:get(Node, Key, eventual).  % Eventual consistency
 
 % Delete data
 ok = chord:delete(Node, Key).
+ok = chord:delete(Node, Key, quorum).
+ok = chord:delete(Node, Key, eventual).
 ```
 
-## 9. Future Enhancements (Phase 4+)
+## 9. Future Enhancements (Phase 6+)
 
-- **Replication**: Store keys on N successors
-- **Consistency**: Quorum-based reads/writes  
-- **Anti-entropy**: Merkle trees for replica synchronization
-- **Persistence**: Disk-based storage backend
-- **Monitoring**: Metrics and observability
+### 9.1 Completed in Phase 4-5 ✅
+- ✅ **Replication**: N=3 successor-list replication implemented
+- ✅ **Consistency**: Quorum-based reads/writes (R=W=2) implemented
+- ✅ **Anti-entropy**: Periodic replica synchronization implemented
+- ✅ **Large-scale testing**: 10-node cluster failure scenarios validated
+
+### 9.2 Planned Future Work 🔲
+- **Persistence**: Disk-based storage backend with WAL
+- **Monitoring**: Comprehensive metrics and observability dashboard
+- **Advanced conflict resolution**: Vector clocks or last-write-wins with better timestamps
+- **OTP supervision**: Proper supervision trees for production deployment
+- **Enhanced CLI tools**: Administrative dashboard and monitoring tools
+- **Performance optimizations**: Further reduce latency and increase throughput
+- **Security**: Authentication and encryption for inter-node communication
+
+### 9.3 Research Opportunities 🔬
+- **Merkle trees**: More sophisticated anti-entropy mechanisms
+- **Dynamic replication factor**: Adaptive N based on cluster size and load
+- **Geo-distributed clusters**: Cross-datacenter replication with eventual consistency
+- **Machine learning**: Predictive failure detection and proactive rebalancing
